@@ -1,0 +1,18 @@
+[Unit]
+Description=HomeMealCraft kitchen Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ales
+Group=ales
+WorkingDirectory=/home/ales/homemealcraft
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/home/ales/homemealcraft/.env
+ExecStart=/home/ales/homemealcraft/.venv/bin/python -m bot
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

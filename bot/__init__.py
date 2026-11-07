@@ -1,0 +1,1 @@
+"""HomeMealCraft Telegram bot."""
