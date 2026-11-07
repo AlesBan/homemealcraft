@@ -75,7 +75,9 @@ def _format_product(item: Product) -> str:
         title = f"{item.name} · {item.brand}"
     lines = [f"<b>{title}</b>"]
     if item.ingredient:
-        lines.append(f"Тип: {item.ingredient.name}")
+        lines.append(f"Вид: {item.ingredient.name}")
+        if item.ingredient.category:
+            lines.append(f"Полка: {item.ingredient.category}")
     if item.barcode:
         lines.append(f"Штрихкод: {item.barcode}")
     if item.fat_percent is not None:

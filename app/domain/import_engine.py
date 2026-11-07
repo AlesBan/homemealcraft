@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
+
+log = logging.getLogger("homemealcraft")
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -33,6 +36,7 @@ from app.domain.schemas import (
     ShoppingCheck,
     ShoppingRemove,
 )
+from app.domain.taxonomy import canonical_type_name, normalize_type_name, suggest_category
 
 
 def _utcnow() -> datetime:
@@ -195,20 +199,29 @@ class ImportEngine:
         ingredient_id: str | None,
         ingredient_name: str | None,
         create_if_missing: bool = False,
+        category: str | None = None,
     ) -> Ingredient | None:
         if ingredient_id:
             ing = await session.get(Ingredient, ingredient_id)
             if ing:
                 return ing
         if ingredient_name:
-            name = ingredient_name.strip()
-            ing = await session.scalar(select(Ingredient).where(Ingredient.name == name))
+            raw_name = normalize_type_name(ingredient_name)
+            name = canonical_type_name(raw_name) or raw_name
+            ing = await session.scalar(
+                select(Ingredient).where(Ingredient.name.ilike(name))
+            )
             if ing:
                 return ing
             if create_if_missing:
-                ing = Ingredient(id=_new_id(), name=name)
+                ing = Ingredient(
+                    id=_new_id(),
+                    name=name,
+                    category=category or suggest_category(name),
+                )
                 session.add(ing)
                 await session.flush()
+                log.info("created ingredient type name=%s category=%s", name, ing.category)
                 return ing
         return None
 
@@ -256,11 +269,17 @@ class ImportEngine:
                 select(Product).where(Product.name == action.name.strip())
             )
 
+        type_name = action.ingredient_name
+        if not type_name and action.name:
+            # «Йогурт Teos …» → тип «Йогурт» if first token is a known/new type
+            first = normalize_type_name(action.name).split(" ")[0]
+            type_name = canonical_type_name(first) or first
+
         ingredient = await self._resolve_ingredient(
             session,
             ingredient_id=action.ingredient_id,
-            ingredient_name=action.ingredient_name,
-            create_if_missing=bool(action.ingredient_name),
+            ingredient_name=type_name,
+            create_if_missing=bool(type_name),
         )
 
         raw_scan = None
