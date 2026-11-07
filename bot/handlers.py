@@ -365,10 +365,12 @@ def _prompt_file() -> Path:
 
 
 def _extract_system_prompt_body(raw: str) -> str:
-    """Body between the first pair of --- markers (what to paste into the agent)."""
-    parts = raw.split("---")
-    if len(parts) >= 3:
-        return parts[1].strip() + "\n"
+    """Body between the first two lines that are exactly --- (not table |---|)."""
+    lines = raw.splitlines()
+    fences = [i for i, line in enumerate(lines) if line.strip() == "---"]
+    if len(fences) >= 2:
+        start, end = fences[0] + 1, fences[1]
+        return "\n".join(lines[start:end]).strip() + "\n"
     return raw.strip() + "\n"
 
 
