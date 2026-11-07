@@ -1,16 +1,19 @@
 ---
-description: Always commit and push completed work to main for HomeMealCraft
+description: Commit/push to main and deploy to VPS after completed changes
 alwaysApply: true
 ---
 
-# Git workflow (HomeMealCraft)
+# Git + VPS workflow (HomeMealCraft)
 
 - Work **only on `main`** unless the user explicitly asks for a branch.
-- After finishing a coherent set of changes (feature, fix, docs), **commit and push** to `origin/main` without waiting to be asked.
+- After finishing a coherent set of changes, do **all three** without waiting to be asked:
+  1. **Commit** locally
+  2. **Push** to `origin/main`
+  3. **Deploy** to VPS: `python deploy\deploy.py` (use `--skip-env` unless `.env` intentionally changed)
 - Never commit secrets: `.env`, tokens, credentials, local DB files under `data/*.sqlite`.
-- Follow the repo commit style: short imperative summary of *why*.
+- Commit style: short imperative summary of *why*.
 - Do not amend pushed commits; do not force-push to `main`.
-- Typical sequence: `git status` → `git diff` → `git add` (relevant files) → `git commit` → `git push origin main` → `git status`.
+- Sequence: `git status` → `git diff` → `git add` → `git commit` → `git -c http.sslVerify=false push origin main` → `python deploy\deploy.py --skip-env` → verify.
 - Remote: `https://github.com/AlesBan/homemealcraft.git`
-- On this Windows machine HTTPS may fail SSL verify; push with `git -c http.sslVerify=false push origin main` (do **not** change global git config).
-- After commit/push of rules or bot code that must hit VPS, also run `python deploy\deploy.py` when the user expects the live bot updated.
+- On this Windows machine HTTPS may need `git -c http.sslVerify=false` (do **not** change global git config).
+- Deploy needs user approval for the remote script; request it when blocked.
