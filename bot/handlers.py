@@ -361,11 +361,11 @@ def _project_root() -> Path:
 
 
 def _prompt_file() -> Path:
-    return _project_root() / "docs" / "deepseek_system_prompt.md"
+    return _project_root() / "docs" / "ai_agent_rules.md"
 
 
 def _extract_system_prompt_body(raw: str) -> str:
-    """Body between the first pair of --- markers (what to paste into DeepSeek)."""
+    """Body between the first pair of --- markers (what to paste into the agent)."""
     parts = raw.split("---")
     if len(parts) >= 3:
         return parts[1].strip() + "\n"
@@ -397,17 +397,9 @@ async def cmd_prompt(message: Message) -> None:
     body = _extract_system_prompt_body(raw)
     document = BufferedInputFile(
         body.encode("utf-8"),
-        filename="homemealcraft_ai_agent_rules.txt",
+        filename="ai_agent_rules.txt",
     )
-    await message.answer_document(
-        document,
-        caption=(
-            "<b>Правила для ИИ-агента</b>\n"
-            "Скачайте файл и вставьте содержимое в system prompt.\n"
-            "После правок на ПК: <code>python deploy\\deploy.py</code> — "
-            "файл на сервере и в боте обновится."
-        ),
-    )
+    await message.answer_document(document)
     log.info("prompt downloaded user=%s bytes=%s", message.from_user.id if message.from_user else "?", len(body))
 
 

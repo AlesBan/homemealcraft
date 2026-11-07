@@ -38,4 +38,4 @@
 
 ## Пример
 
-См. `docs/deepseek_system_prompt.md` и пример сырников в плане.
+См. `docs/ai_agent_rules.md` и пример сырников в плане.

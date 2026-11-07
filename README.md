@@ -2,7 +2,7 @@
 
 Telegram-бот для домашней кухни на двоих.  
 **Фокус:** блюда и их состав → вручную понять, чего не хватает → список покупок.  
-Ввод — JSON от DeepSeek (голос/текст). Меню недели — позже.
+Ввод — JSON от ИИ-агента (голос/текст). Меню недели — позже.
 
 ## Модель
 
@@ -40,4 +40,4 @@ python deploy\deploy.py
 
 ## JSON
 
-Текст или файл `.json` в бота. Prompt для DeepSeek: [`docs/deepseek_system_prompt.md`](docs/deepseek_system_prompt.md).
+Текст или файл `.json` в бота. Правила для ИИ-агента: [`docs/ai_agent_rules.md`](docs/ai_agent_rules.md).

@@ -1,7 +1,7 @@
 """Suggested ingredient (product type) names and grocery categories.
 
 Unknown types are still allowed: the import engine creates a new ingredient.
-This list is a hint for DeepSeek and for auto-filling `category` when possible.
+This list is a hint for the AI agent and for auto-filling `category` when possible.
 """
 
 from __future__ import annotations
