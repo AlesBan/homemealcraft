@@ -11,7 +11,7 @@ from aiogram.types import (
 BOT_COMMANDS = [
     BotCommand(command="start", description="Главное меню"),
     BotCommand(command="help", description="Как импортировать JSON"),
-    BotCommand(command="prompt", description="Скачать правила для DeepSeek"),
+    BotCommand(command="rules", description="Правила для ИИ-агента"),
     BotCommand(command="ingredients", description="Ингредиенты"),
     BotCommand(command="products", description="Продукты"),
     BotCommand(command="dishes", description="Блюда"),

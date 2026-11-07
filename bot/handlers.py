@@ -351,7 +351,7 @@ async def cmd_start(message: Message) -> None:
         "<b>Домашняя кухня</b>\n\n"
         "Пришлите JSON текстом или файлом — добавлю в каталог.\n"
         "Кнопки — списки блюд/продуктов.\n"
-        "Правила для DeepSeek: /prompt",
+        "Правила для ИИ-агента: /rules",
         reply_markup=main_keyboard(),
     )
 
@@ -377,15 +377,15 @@ def _extract_system_prompt_body(raw: str) -> str:
 async def cmd_help(message: Message) -> None:
     await message.answer(
         "<b>Импорт JSON</b>\n\n"
-        "1. /prompt — скачайте правила для DeepSeek\n"
-        "2. Вставьте их в DeepSeek как system prompt\n"
+        "1. /rules — скачайте правила для ИИ-агента\n"
+        "2. Вставьте их в system prompt агента\n"
         "3. Надиктуйте блюдо/продукт → пришлите JSON боту\n\n"
         "Блюда и продукты отдельно. Версии рецепта — внутри одного блюда. БЖУ на 100 г."
     )
 
 
-@router.message(Command("prompt"))
 @router.message(Command("rules"))
+@router.message(Command("prompt"))
 async def cmd_prompt(message: Message) -> None:
     path = _prompt_file()
     if not path.exists():
@@ -395,15 +395,14 @@ async def cmd_prompt(message: Message) -> None:
 
     raw = path.read_text(encoding="utf-8")
     body = _extract_system_prompt_body(raw)
-    # Clean file for DeepSeek (only the system block)
     document = BufferedInputFile(
         body.encode("utf-8"),
-        filename="homemealcraft_deepseek_prompt.txt",
+        filename="homemealcraft_ai_agent_rules.txt",
     )
     await message.answer_document(
         document,
         caption=(
-            "<b>Правила для DeepSeek</b>\n"
+            "<b>Правила для ИИ-агента</b>\n"
             "Скачайте файл и вставьте содержимое в system prompt.\n"
             "После правок на ПК: <code>python deploy\\deploy.py</code> — "
             "файл на сервере и в боте обновится."
@@ -620,6 +619,6 @@ async def on_unknown_text(message: Message) -> None:
     log.debug("unknown text user message ignored politely")
     await message.answer(
         "Не похоже на JSON.\n"
-        "Выберите раздел кнопкой или пришлите пакет из DeepSeek.",
+        "Выберите раздел кнопкой или пришлите JSON-пакет от ИИ-агента.",
         reply_markup=main_keyboard(),
     )
