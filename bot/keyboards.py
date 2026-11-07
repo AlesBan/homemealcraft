@@ -24,7 +24,6 @@ BTN_PRODUCTS = "📦 Продукты"
 BTN_DISHES = "🍽 Блюда"
 BTN_SHOPPING = "🛒 Покупки"
 BTN_HELP = "❓ JSON"
-BTN_PROMPT = "📥 DeepSeek"
 
 
 def main_keyboard() -> ReplyKeyboardMarkup:
@@ -39,7 +38,6 @@ def main_keyboard() -> ReplyKeyboardMarkup:
                 KeyboardButton(text=BTN_DISHES),
                 KeyboardButton(text=BTN_SHOPPING),
             ],
-            [KeyboardButton(text=BTN_PROMPT)],
         ],
         resize_keyboard=True,
     )

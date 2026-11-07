@@ -24,7 +24,6 @@ from bot.keyboards import (
     BTN_HOME,
     BTN_INGREDIENTS,
     BTN_PRODUCTS,
-    BTN_PROMPT,
     BTN_SHOPPING,
     back_to_list_keyboard,
     catalog_list_keyboard,
@@ -352,7 +351,7 @@ async def cmd_start(message: Message) -> None:
         "<b>Домашняя кухня</b>\n\n"
         "Пришлите JSON текстом или файлом — добавлю в каталог.\n"
         "Кнопки — списки блюд/продуктов.\n"
-        "<b>📥 DeepSeek</b> — скачать актуальные правила для агента.",
+        "Правила для DeepSeek: /prompt",
         reply_markup=main_keyboard(),
     )
 
@@ -378,7 +377,7 @@ def _extract_system_prompt_body(raw: str) -> str:
 async def cmd_help(message: Message) -> None:
     await message.answer(
         "<b>Импорт JSON</b>\n\n"
-        "1. Нажмите <b>📥 DeepSeek</b> или /prompt — скачайте правила\n"
+        "1. /prompt — скачайте правила для DeepSeek\n"
         "2. Вставьте их в DeepSeek как system prompt\n"
         "3. Надиктуйте блюдо/продукт → пришлите JSON боту\n\n"
         "Блюда и продукты отдельно. Версии рецепта — внутри одного блюда. БЖУ на 100 г."
@@ -387,7 +386,6 @@ async def cmd_help(message: Message) -> None:
 
 @router.message(Command("prompt"))
 @router.message(Command("rules"))
-@router.message(F.text == BTN_PROMPT)
 async def cmd_prompt(message: Message) -> None:
     path = _prompt_file()
     if not path.exists():

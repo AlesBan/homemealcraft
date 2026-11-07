@@ -9,14 +9,12 @@ from bot.keyboards import (
     BTN_HOME,
     BTN_INGREDIENTS,
     BTN_PRODUCTS,
-    BTN_PROMPT,
     BTN_SHOPPING,
 )
 
 MENU_BUTTONS = {
     BTN_HOME,
     BTN_HELP,
-    BTN_PROMPT,
     BTN_INGREDIENTS,
     BTN_PRODUCTS,
     BTN_DISHES,

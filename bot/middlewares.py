@@ -70,7 +70,6 @@ class MessageFilterMiddleware(BaseMiddleware):
         "🍽 Блюда",
         "🛒 Покупки",
         "❓ JSON",
-        "📥 DeepSeek",
     }
 
     async def __call__(
