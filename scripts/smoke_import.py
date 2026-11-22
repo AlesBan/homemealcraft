@@ -68,6 +68,12 @@ SAMPLE = {
             "description": "Маргарита + чеснок",
             "comments": "~40 мин",
         },
+        {
+            "op": "stock.upsert",
+            "ingredient_name": "Мука",
+            "amount": 1000,
+            "unit": "g",
+        },
     ],
 }
 
@@ -148,6 +154,7 @@ async def main() -> None:
     dishes = await catalog.list_dishes(exclude_category="prep")
     shopping = await catalog.list_shopping()
     deliveries = await catalog.list_deliveries()
+    stock = await catalog.list_stock()
     dish = (await catalog.list_dishes(q="Сырники")).items[0]
     full = await catalog.get_dish(dish.id)
     assert full is not None
@@ -155,8 +162,12 @@ async def main() -> None:
     print("products:", [(p.brand, p.kcal, p.ingredient.name if p.ingredient else None) for p in products.items])
     print("dishes:", dishes.total, "versions:", len(versions))
     assert len(versions) >= 2
+    # Composition only from versions
+    assert versions[0].ingredients
     print("shopping:", [(s.name, s.product.ingredient.name if s.product and s.product.ingredient else None) for s in shopping.items])
     print("deliveries:", [(d.name, d.url, d.category) for d in deliveries.items])
+    print("stock:", [(s.name, s.amount) for s in stock.items])
+    assert stock.total >= 1
     print("OK")
 
 

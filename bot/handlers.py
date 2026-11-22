@@ -12,7 +12,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 from pydantic import ValidationError
 
-from app.db.models import Delivery, Dish, DishVersion, Ingredient, Product, ShoppingItem
+from app.db.models import Delivery, Dish, DishVersion, Ingredient, Product, ShoppingItem, StockItem
 from app.domain.catalog import PAGE_SIZE, CatalogService, PageResult
 from app.domain.import_engine import ImportEngine
 from app.domain.json_extract import extract_json_object
@@ -27,6 +27,7 @@ from bot.keyboards import (
     BTN_PREPS,
     BTN_PRODUCTS,
     BTN_SHOPPING,
+    BTN_STOCK,
     back_to_list_keyboard,
     catalog_list_keyboard,
     confirm_delete_version_keyboard,
@@ -34,6 +35,7 @@ from bot.keyboards import (
     main_keyboard,
     need_checklist_keyboard,
     shopping_card_keyboard,
+    stock_card_keyboard,
 )
 
 PREP_CATEGORY = "prep"
@@ -86,7 +88,20 @@ LIST_TITLES = {
     "dish": "Блюда",
     "prep": "Заготовки",
     "deliv": "Доставки",
+    "stock": "Кладовая",
     "shop": "Покупки",
+}
+
+MENU_TEXTS = {
+    BTN_HOME,
+    BTN_HELP,
+    BTN_INGREDIENTS,
+    BTN_PRODUCTS,
+    BTN_DISHES,
+    BTN_PREPS,
+    BTN_DELIVERIES,
+    BTN_STOCK,
+    BTN_SHOPPING,
 }
 
 
@@ -241,22 +256,7 @@ def _format_dish_card(dish: Dish, version: DishVersion | None = None) -> str:
         if version.result_comment:
             lines.append(f"Результат: {version.result_comment}")
     else:
-        if dish.cook_time_min is not None or dish.servings is not None:
-            meta = []
-            if dish.cook_time_min is not None:
-                meta.append(f"{dish.cook_time_min} мин")
-            if dish.servings is not None:
-                meta.append(f"{dish.servings} порц.")
-            lines.append(" · ".join(meta))
-        if dish.description:
-            lines.append("")
-            lines.append(dish.description)
-        lines.extend(_ingredient_lines(dish.ingredients))
-        if dish.instructions:
-            lines.append("")
-            lines.append(dish.instructions)
-        lines.append("")
-        lines.append(_nutrition_line(dish.kcal, dish.protein_g, dish.fat_g, dish.carbs_g))
+        lines.append("Состав: нет версии рецепта (пришлите JSON с ingredients).")
         if dish.comments:
             lines.append(f"Комментарий: {dish.comments}")
 
@@ -308,6 +308,23 @@ def _format_delivery(item: Delivery) -> str:
     if item.description:
         lines.append("")
         lines.append(item.description)
+    if item.comments:
+        lines.append(f"Комментарий: {item.comments}")
+    return "\n".join(lines)
+
+
+def _format_stock(item: StockItem) -> str:
+    lines = [f"<b>{item.name}</b>", "В кладовой"]
+    if item.ingredient:
+        shelf = _shelf_ru(item.ingredient.category)
+        lines.append(f"Вид: {item.ingredient.name}")
+        if shelf:
+            lines.append(f"Полка: {shelf}")
+    if item.amount is not None:
+        unit = item.unit or "g"
+        lines.append(f"Количество: {item.amount:g} {unit}")
+    elif item.unit:
+        lines.append(f"Ед.: {item.unit}")
     if item.comments:
         lines.append(f"Комментарий: {item.comments}")
     return "\n".join(lines)
@@ -377,6 +394,8 @@ async def _fetch_page(
         return await catalog.list_dishes(page=page, q=q, category=PREP_CATEGORY)
     if kind == "deliv":
         return await catalog.list_deliveries(page=page, q=q)
+    if kind == "stock":
+        return await catalog.list_stock(page=page, q=q)
     if kind == "shop":
         return await catalog.list_shopping(page=page, q=q)
     return PageResult([], 0, 0, PAGE_SIZE, q)
@@ -403,6 +422,15 @@ def _page_buttons(kind: str, page: PageResult) -> list[tuple[str, str]]:
             label = f"{item.name}" + (f" · {cat}" if cat else "")
             buttons.append((item.id, label))
         return buttons
+    if kind == "stock":
+        buttons = []
+        for item in page.items:
+            if item.amount is not None:
+                label = f"{item.name} · {item.amount:g}{item.unit or 'g'}"
+            else:
+                label = item.name
+            buttons.append((item.id, label))
+        return buttons
     if kind == "shop":
         return [(s.id, f"{'✓ ' if s.is_bought else ''}{s.name}") for s in page.items]
     return []
@@ -417,6 +445,7 @@ def _empty_list_text(kind: str, query: str | None) -> str:
         "dish": "Блюд пока нет. Пришлите JSON.",
         "prep": 'Заготовок пока нет. Пришлите JSON с category: "prep".',
         "deliv": "Доставок пока нет. Пришлите JSON.",
+        "stock": "Кладовая пуста. Отметьте «Есть» в составе блюда или пришлите stock.upsert.",
         "shop": "Список покупок пуст.",
     }
     return defaults.get(kind, "Пусто.")
@@ -449,6 +478,7 @@ async def _send_catalog_list(
         "dish": "Одно блюдо = одна карточка. Версии — внутри.",
         "prep": 'Те же поля, что у блюд. JSON: dish.upsert + category "prep".',
         "deliv": "Где что заказывать — ссылки и заметки.",
+        "stock": "Что есть дома. «Есть» в составе блюда тоже кладёт сюда.",
         "shop": "Отметьте купленное или удалите позицию.",
     }.get(kind, "Выберите позицию:")
 
@@ -468,8 +498,10 @@ async def _show_need_checklist(
     dish: Dish,
     remaining: list[tuple[str, str]],
     *,
+    in_stock: set[str] | None = None,
     edit: bool = True,
 ) -> None:
+    stock_ids = in_stock or set()
     if not remaining:
         text = (
             f"<b>{dish.name}</b>\n\n"
@@ -481,11 +513,12 @@ async def _show_need_checklist(
 
     lines = [
         f"<b>{dish.name}</b> — проверить состав",
-        "Есть — пропустить. В покупки — добавить в список.",
+        "Есть — в кладовую. В покупки — в список покупок.",
         "",
     ]
-    for _ing_id, label in remaining:
-        lines.append(f"· {label}")
+    for ing_id, label in remaining:
+        mark = " · в кладовой" if ing_id in stock_ids else ""
+        lines.append(f"· {label}{mark}")
     markup = need_checklist_keyboard(dish.id, remaining)
     await _edit_or_answer(target, "\n".join(lines), markup=markup, edit=edit)
 
@@ -530,7 +563,7 @@ async def cmd_help(message: Message, state: FSMContext) -> None:
         "2. Вставьте их в system prompt агента\n"
         "3. Надиктуйте блюдо/заготовку/продукт/доставку → JSON боту\n\n"
         "То же имя блюда + состав = новая версия. "
-        "У блюда кнопка «Проверить состав» → покупки. БЖУ на 100 г."
+        "У блюда «Проверить состав»: Есть → кладовая, В покупки → список. БЖУ на 100 г."
     )
 
 
@@ -600,6 +633,15 @@ async def cmd_deliveries(
 ) -> None:
     await state.clear()
     await _send_catalog_list(message, catalog, "deliv", state=state)
+
+
+@router.message(Command("stock"))
+@router.message(F.text == BTN_STOCK)
+async def cmd_stock(
+    message: Message, catalog: CatalogService, state: FSMContext
+) -> None:
+    await state.clear()
+    await _send_catalog_list(message, catalog, "stock", state=state)
 
 
 @router.message(Command("shopping"))
@@ -693,16 +735,7 @@ async def on_search_query(
     message: Message, catalog: CatalogService, state: FSMContext
 ) -> None:
     text = (message.text or "").strip()
-    if text.startswith("/") or text in {
-        BTN_HOME,
-        BTN_HELP,
-        BTN_INGREDIENTS,
-        BTN_PRODUCTS,
-        BTN_DISHES,
-        BTN_PREPS,
-        BTN_DELIVERIES,
-        BTN_SHOPPING,
-    }:
+    if text.startswith("/") or text in MENU_TEXTS:
         await state.clear()
         return
     data = await state.get_data()
@@ -826,9 +859,11 @@ async def on_need_start(
         return
 
     version = _pick_version(dish)
-    links = version.ingredients if version else dish.ingredients
+    if not version:
+        await callback.answer("Нет версии рецепта", show_alert=True)
+        return
     remaining: list[tuple[str, str]] = []
-    for link in links or []:
+    for link in version.ingredients or []:
         if not link.ingredient:
             continue
         label = link.ingredient.name
@@ -840,10 +875,13 @@ async def on_need_start(
         await callback.answer("Состав пуст", show_alert=True)
         return
 
+    in_stock = await catalog.stock_ingredient_ids()
     await state.set_state(NeedCheck.active)
     await state.update_data(need_dish_id=dish_id, need_items=remaining)
     await callback.answer()
-    await _show_need_checklist(callback.message, dish, remaining, edit=True)
+    await _show_need_checklist(
+        callback.message, dish, remaining, in_stock=in_stock, edit=True
+    )
 
 
 @router.callback_query(F.data.startswith("needh:"), StateFilter(NeedCheck.active))
@@ -861,16 +899,33 @@ async def on_need_have(
     if idx < 0 or idx >= len(remaining) or not dish_id:
         await callback.answer("Устарело", show_alert=True)
         return
-    remaining.pop(idx)
-    await state.update_data(need_items=remaining)
+    ing_id, label = remaining.pop(idx)
+    name = label.split(" (", 1)[0]
+    amount = None
+    unit = None
     dish = await catalog.get_dish(dish_id)
+    if dish:
+        version = _pick_version(dish)
+        for link in (version.ingredients if version else []) or []:
+            if link.ingredient_id == ing_id and link.ingredient:
+                name = link.ingredient.name
+                amount = link.amount
+                unit = link.unit
+                break
+    await catalog.upsert_stock(
+        name=name, ingredient_id=ing_id, amount=amount, unit=unit
+    )
+    await state.update_data(need_items=remaining)
     if not dish or not isinstance(callback.message, Message):
-        await callback.answer()
+        await callback.answer("В кладовую")
         return
-    await callback.answer("Есть")
+    await callback.answer(f"В кладовую: {name}")
     if not remaining:
         await state.clear()
-    await _show_need_checklist(callback.message, dish, remaining, edit=True)
+    in_stock = await catalog.stock_ingredient_ids()
+    await _show_need_checklist(
+        callback.message, dish, remaining, in_stock=in_stock, edit=True
+    )
 
 
 @router.callback_query(F.data.startswith("needb:"), StateFilter(NeedCheck.active))
@@ -895,8 +950,7 @@ async def on_need_buy(
     category = None
     if dish:
         version = _pick_version(dish)
-        links = version.ingredients if version else dish.ingredients
-        for link in links or []:
+        for link in (version.ingredients if version else []) or []:
             if link.ingredient_id == ing_id and link.ingredient:
                 name = link.ingredient.name
                 category = link.ingredient.category
@@ -909,7 +963,10 @@ async def on_need_buy(
     await callback.answer(f"В покупки: {name}")
     if not remaining:
         await state.clear()
-    await _show_need_checklist(callback.message, dish, remaining, edit=True)
+    in_stock = await catalog.stock_ingredient_ids()
+    await _show_need_checklist(
+        callback.message, dish, remaining, in_stock=in_stock, edit=True
+    )
 
 
 @router.callback_query(F.data.startswith("needdone:"))
@@ -994,6 +1051,40 @@ async def on_delivery(callback: CallbackQuery, catalog: CatalogService) -> None:
         markup=back_to_list_keyboard("deliv"),
         edit=True,
     )
+
+
+@router.callback_query(F.data.startswith("stock:"))
+async def on_stock(callback: CallbackQuery, catalog: CatalogService) -> None:
+    item_id = (callback.data or "")[6:]
+    if item_id.startswith("rm:"):
+        return
+    item = await catalog.get_stock(item_id)
+    if not item or not isinstance(callback.message, Message):
+        await callback.answer("Не найдено", show_alert=True)
+        return
+    await callback.answer()
+    await _edit_or_answer(
+        callback.message,
+        _format_stock(item),
+        markup=stock_card_keyboard(item.id),
+        edit=True,
+    )
+
+
+@router.callback_query(F.data.startswith("stockrm:"))
+async def on_stock_rm(
+    callback: CallbackQuery, catalog: CatalogService, state: FSMContext
+) -> None:
+    item_id = (callback.data or "")[8:]
+    ok = await catalog.remove_stock(item_id)
+    if not ok:
+        await callback.answer("Уже нет", show_alert=True)
+        return
+    await callback.answer("Убрано")
+    if isinstance(callback.message, Message):
+        await _send_catalog_list(
+            callback.message, catalog, "stock", edit=True, state=state
+        )
 
 
 def _format_import_error(exc: Exception) -> str:

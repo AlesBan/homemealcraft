@@ -9,6 +9,7 @@ OP_ALIASES = {
     "product.create": "product.upsert",
     "dish.create": "dish.upsert",
     "delivery.create": "delivery.upsert",
+    "stock.create": "stock.upsert",
     "dish_version.add": "dish_version.create",
 }
 
@@ -161,6 +162,40 @@ class ShoppingRemove(BaseModel):
     shopping_id: str | None = None
 
 
+class StockUpsert(BaseModel):
+    """Pantry row: what is currently at home."""
+
+    op: Literal["stock.upsert"] = "stock.upsert"
+    id: str | None = None
+    ingredient_id: str | None = None
+    ingredient_name: str | None = None
+    name: str | None = None
+    amount: float | None = None
+    unit: str | None = None
+    comments: str | None = None
+    clear_fields: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def require_ref(self) -> StockUpsert:
+        if not self.ingredient_id and not self.ingredient_name and not self.name:
+            raise ValueError("ingredient_id, ingredient_name or name is required")
+        return self
+
+
+class StockRemove(BaseModel):
+    op: Literal["stock.remove"] = "stock.remove"
+    id: str | None = None
+    ingredient_id: str | None = None
+    ingredient_name: str | None = None
+    name: str | None = None
+
+    @model_validator(mode="after")
+    def require_target(self) -> StockRemove:
+        if self.id or self.ingredient_id or self.ingredient_name or self.name:
+            return self
+        raise ValueError("id, ingredient_id, ingredient_name or name required")
+
+
 Action = (
     IngredientUpsert
     | ProductUpsert
@@ -171,6 +206,8 @@ Action = (
     | ShoppingAdd
     | ShoppingCheck
     | ShoppingRemove
+    | StockUpsert
+    | StockRemove
 )
 
 _ACTION_BY_OP: dict[str, type[BaseModel]] = {
@@ -183,6 +220,8 @@ _ACTION_BY_OP: dict[str, type[BaseModel]] = {
     "shopping.add": ShoppingAdd,
     "shopping.check": ShoppingCheck,
     "shopping.remove": ShoppingRemove,
+    "stock.upsert": StockUpsert,
+    "stock.remove": StockRemove,
 }
 
 

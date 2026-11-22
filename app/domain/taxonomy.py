@@ -142,6 +142,11 @@ def normalize_type_name(name: str) -> str:
     return " ".join(name.split()).strip()
 
 
+def normalize_entity_name(name: str) -> str:
+    """Collapse whitespace for dish/product/delivery/stock names."""
+    return normalize_type_name(name)
+
+
 def suggest_category(type_name: str) -> str:
     key = normalize_type_name(type_name)
     if key in TYPE_TO_CATEGORY:

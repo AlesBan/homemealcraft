@@ -28,6 +28,8 @@
 | `dish_version.create` | Явная новая версия |
 | `dish_version.delete` | Удаление версии |
 | `delivery.upsert` | Доставка: ссылка / где что заказывать + комментарий |
+| `stock.upsert` | Кладовая: что есть дома (вид / имя) |
+| `stock.remove` | Убрать из кладовой |
 | `shopping.add` | В список покупок |
 | `shopping.check` | Отметить купленным |
 | `shopping.remove` | Удалить из списка |

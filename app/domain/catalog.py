@@ -9,12 +9,12 @@ from sqlalchemy.orm import selectinload
 from app.db.models import (
     Delivery,
     Dish,
-    DishIngredient,
     DishVersion,
     DishVersionIngredient,
     Ingredient,
     Product,
     ShoppingItem,
+    StockItem,
 )
 
 PAGE_SIZE = 15
@@ -94,9 +94,7 @@ class CatalogService:
         exclude_category: str | None = None,
     ) -> PageResult:
         async with self._session_factory() as session:
-            stmt = select(Dish).options(
-                selectinload(Dish.ingredients).selectinload(DishIngredient.ingredient)
-            )
+            stmt = select(Dish)
             count_stmt = select(func.count()).select_from(Dish)
             if category is not None:
                 stmt = stmt.where(Dish.category == category)
@@ -185,12 +183,90 @@ class CatalogService:
                 select(Dish)
                 .where(Dish.id == item_id)
                 .options(
-                    selectinload(Dish.ingredients).selectinload(DishIngredient.ingredient),
                     selectinload(Dish.versions).selectinload(DishVersion.ingredients).selectinload(
                         DishVersionIngredient.ingredient
                     ),
                 )
             )
+
+    async def list_stock(
+        self,
+        *,
+        page: int = 0,
+        page_size: int = PAGE_SIZE,
+        q: str | None = None,
+    ) -> PageResult:
+        async with self._session_factory() as session:
+            stmt = select(StockItem).options(selectinload(StockItem.ingredient))
+            count_stmt = select(func.count()).select_from(StockItem)
+            if q:
+                like = f"%{q.strip()}%"
+                stmt = stmt.where(StockItem.name.ilike(like))
+                count_stmt = count_stmt.where(StockItem.name.ilike(like))
+            total = int(await session.scalar(count_stmt) or 0)
+            rows = await session.scalars(
+                stmt.order_by(StockItem.name)
+                .offset(page * page_size)
+                .limit(page_size)
+            )
+            return PageResult(list(rows), total, page, page_size, q)
+
+    async def get_stock(self, item_id: str) -> StockItem | None:
+        async with self._session_factory() as session:
+            return await session.scalar(
+                select(StockItem)
+                .where(StockItem.id == item_id)
+                .options(selectinload(StockItem.ingredient))
+            )
+
+    async def stock_ingredient_ids(self) -> set[str]:
+        async with self._session_factory() as session:
+            rows = await session.scalars(
+                select(StockItem.ingredient_id).where(StockItem.ingredient_id.is_not(None))
+            )
+            return {r for r in rows if r}
+
+    async def upsert_stock(
+        self,
+        *,
+        name: str,
+        ingredient_id: str | None = None,
+        amount: float | None = None,
+        unit: str | None = None,
+    ) -> StockItem:
+        async with self._session_factory() as session:
+            entity: StockItem | None = None
+            if ingredient_id:
+                entity = await session.scalar(
+                    select(StockItem).where(StockItem.ingredient_id == ingredient_id)
+                )
+            if entity is None:
+                entity = await session.scalar(
+                    select(StockItem).where(StockItem.name.ilike(name.strip()))
+                )
+            if entity is None:
+                entity = StockItem(name=name.strip(), ingredient_id=ingredient_id)
+                session.add(entity)
+            else:
+                entity.name = name.strip()
+                if ingredient_id:
+                    entity.ingredient_id = ingredient_id
+            if amount is not None:
+                entity.amount = amount
+            if unit is not None:
+                entity.unit = unit
+            await session.commit()
+            await session.refresh(entity)
+            return entity
+
+    async def remove_stock(self, item_id: str) -> bool:
+        async with self._session_factory() as session:
+            item = await session.get(StockItem, item_id)
+            if item is None:
+                return False
+            await session.delete(item)
+            await session.commit()
+            return True
 
     async def get_dish_version(self, version_id: str) -> DishVersion | None:
         async with self._session_factory() as session:

@@ -10,20 +10,19 @@ from uuid import uuid4
 
 log = logging.getLogger("homemealcraft")
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from sqlalchemy.orm import selectinload
 
 from app.db.models import (
     Delivery,
     Dish,
-    DishIngredient,
     DishVersion,
     DishVersionIngredient,
     ImportEvent,
     Ingredient,
     Product,
     ShoppingItem,
+    StockItem,
 )
 from app.domain.schemas import (
     DeliveryUpsert,
@@ -37,8 +36,15 @@ from app.domain.schemas import (
     ShoppingAdd,
     ShoppingCheck,
     ShoppingRemove,
+    StockRemove,
+    StockUpsert,
 )
-from app.domain.taxonomy import canonical_type_name, normalize_type_name, suggest_category
+from app.domain.taxonomy import (
+    canonical_type_name,
+    normalize_entity_name,
+    normalize_type_name,
+    suggest_category,
+)
 
 
 def _utcnow() -> datetime:
@@ -103,6 +109,8 @@ class ImportReport:
             "product.upsert": "продукты",
             "dish.upsert": "блюда",
             "delivery.upsert": "доставки",
+            "stock.upsert": "кладовая",
+            "stock.remove": "убрано из кладовой",
             "dish_version.create": "версии рецептов",
             "dish_version.delete": "удалены версии",
             "shopping.add": "покупки",
@@ -176,6 +184,10 @@ class ImportEngine:
                         results.append(await self._delete_dish_version(session, action))
                     elif isinstance(action, DeliveryUpsert):
                         results.append(await self._upsert_delivery(session, action))
+                    elif isinstance(action, StockUpsert):
+                        results.append(await self._upsert_stock(session, action))
+                    elif isinstance(action, StockRemove):
+                        results.append(await self._remove_stock(session, action))
                     elif isinstance(action, ShoppingAdd):
                         results.append(await self._shopping_add(session, action))
                     elif isinstance(action, ShoppingCheck):
@@ -248,16 +260,18 @@ class ImportEngine:
     async def _upsert_ingredient(
         self, session: AsyncSession, action: IngredientUpsert
     ) -> ActionResult:
+        raw = normalize_type_name(action.name)
+        name = canonical_type_name(raw) or raw
         entity: Ingredient | None = None
         if action.id:
             entity = await session.get(Ingredient, action.id)
         if entity is None:
             entity = await session.scalar(
-                select(Ingredient).where(Ingredient.name == action.name.strip())
+                select(Ingredient).where(Ingredient.name.ilike(name))
             )
 
         payload = {
-            "name": action.name.strip(),
+            "name": name,
             "category": action.category,
             "kcal": action.kcal,
             "protein_g": action.protein_g,
@@ -284,15 +298,16 @@ class ImportEngine:
             entity = await session.scalar(
                 select(Product).where(Product.barcode == action.barcode.strip())
             )
+        product_name = normalize_entity_name(action.name)
         if entity is None:
             entity = await session.scalar(
-                select(Product).where(Product.name == action.name.strip())
+                select(Product).where(Product.name.ilike(product_name))
             )
 
         type_name = action.ingredient_name
-        if not type_name and action.name:
+        if not type_name and product_name:
             # «Йогурт Teos …» → тип «Йогурт» if first token is a known/new type
-            first = normalize_type_name(action.name).split(" ")[0]
+            first = product_name.split(" ")[0]
             type_name = canonical_type_name(first) or first
 
         ingredient = await self._resolve_ingredient(
@@ -311,8 +326,8 @@ class ImportEngine:
             )
 
         payload = {
-            "name": action.name.strip(),
-            "brand": action.brand,
+            "name": product_name,
+            "brand": action.brand.strip() if action.brand else None,
             "barcode": action.barcode.strip() if action.barcode else None,
             "fat_percent": action.fat_percent,
             "weight_g": action.weight_g,
@@ -361,23 +376,20 @@ class ImportEngine:
         return ActionResult(op=action.op, status="updated", id=entity.id)
 
     async def _upsert_dish(self, session: AsyncSession, action: DishUpsert) -> ActionResult:
-        # Match by id; if no id — by exact name (create only when missing)
+        # Match by id; if no id — by normalized name (case-insensitive)
+        dish_name = normalize_entity_name(action.name)
         entity: Dish | None = None
         if action.id:
             entity = await session.scalar(
-                select(Dish)
-                .where(Dish.id == action.id)
-                .options(selectinload(Dish.ingredients))
+                select(Dish).where(Dish.id == action.id)
             )
         else:
             entity = await session.scalar(
-                select(Dish)
-                .where(Dish.name == action.name.strip())
-                .options(selectinload(Dish.ingredients))
+                select(Dish).where(Dish.name.ilike(dish_name))
             )
 
         payload = {
-            "name": action.name.strip(),
+            "name": dish_name,
             "category": action.category,
             "description": action.description,
             "cook_time_min": action.cook_time_min,
@@ -429,33 +441,6 @@ class ImportEngine:
             id=entity.id,
             detail="new_version" if (not created and action.ingredients is not None) else None,
         )
-
-    async def _replace_dish_ingredients(
-        self,
-        session: AsyncSession,
-        dish_id: str,
-        lines: list[DishIngredientLine],
-    ) -> None:
-        await session.execute(delete(DishIngredient).where(DishIngredient.dish_id == dish_id))
-        for line in lines:
-            ing = await self._resolve_ingredient(
-                session,
-                ingredient_id=line.ingredient_id,
-                ingredient_name=line.ingredient_name,
-                create_if_missing=True,
-            )
-            if ing is None:
-                raise ValueError("cannot resolve ingredient")
-            session.add(
-                DishIngredient(
-                    id=_new_id(),
-                    dish_id=dish_id,
-                    ingredient_id=ing.id,
-                    amount=line.amount,
-                    unit=line.unit or "g",
-                    note=line.note,
-                )
-            )
 
     async def _add_version(
         self,
@@ -541,7 +526,7 @@ class ImportEngine:
             ):
                 if value is not None:
                     setattr(dish, field_name, value)
-            await self._replace_dish_ingredients(session, dish.id, ingredients)
+            # Composition source of truth = dish_versions only (no DishIngredient mirror).
 
         await session.flush()
         return version
@@ -553,13 +538,14 @@ class ImportEngine:
         if action.dish_id:
             dish = await session.get(Dish, action.dish_id)
         if dish is None and action.dish_name:
+            dish_name = normalize_entity_name(action.dish_name)
             dish = await session.scalar(
-                select(Dish).where(Dish.name == action.dish_name.strip())
+                select(Dish).where(Dish.name.ilike(dish_name))
             )
         if dish is None:
             if not action.dish_name:
                 raise ValueError("dish not found for version")
-            dish = Dish(id=_new_id(), name=action.dish_name.strip())
+            dish = Dish(id=_new_id(), name=normalize_entity_name(action.dish_name))
             session.add(dish)
             await session.flush()
 
@@ -632,16 +618,17 @@ class ImportEngine:
     async def _upsert_delivery(
         self, session: AsyncSession, action: DeliveryUpsert
     ) -> ActionResult:
+        name = normalize_entity_name(action.name)
         entity: Delivery | None = None
         if action.id:
             entity = await session.get(Delivery, action.id)
         else:
             entity = await session.scalar(
-                select(Delivery).where(Delivery.name == action.name.strip())
+                select(Delivery).where(Delivery.name.ilike(name))
             )
 
         payload = {
-            "name": action.name.strip(),
+            "name": name,
             "category": action.category,
             "url": action.url.strip() if action.url else None,
             "description": action.description,
@@ -660,6 +647,103 @@ class ImportEngine:
         await session.flush()
         return ActionResult(op=action.op, status="updated", id=entity.id)
 
+    async def _find_stock(
+        self,
+        session: AsyncSession,
+        *,
+        stock_id: str | None = None,
+        ingredient_id: str | None = None,
+        ingredient_name: str | None = None,
+        name: str | None = None,
+    ) -> StockItem | None:
+        if stock_id:
+            return await session.get(StockItem, stock_id)
+        if ingredient_id:
+            return await session.scalar(
+                select(StockItem).where(StockItem.ingredient_id == ingredient_id)
+            )
+        if ingredient_name:
+            ing = await self._resolve_ingredient(
+                session,
+                ingredient_id=None,
+                ingredient_name=ingredient_name,
+                create_if_missing=False,
+            )
+            if ing:
+                found = await session.scalar(
+                    select(StockItem).where(StockItem.ingredient_id == ing.id)
+                )
+                if found:
+                    return found
+            key = normalize_entity_name(ingredient_name)
+            return await session.scalar(
+                select(StockItem).where(StockItem.name.ilike(key))
+            )
+        if name:
+            key = normalize_entity_name(name)
+            return await session.scalar(
+                select(StockItem).where(StockItem.name.ilike(key))
+            )
+        return None
+
+    async def _upsert_stock(self, session: AsyncSession, action: StockUpsert) -> ActionResult:
+        ingredient = await self._resolve_ingredient(
+            session,
+            ingredient_id=action.ingredient_id,
+            ingredient_name=action.ingredient_name,
+            create_if_missing=bool(action.ingredient_name),
+        )
+        display_name = None
+        if action.name:
+            display_name = normalize_entity_name(action.name)
+        elif ingredient:
+            display_name = ingredient.name
+        elif action.ingredient_name:
+            display_name = normalize_entity_name(action.ingredient_name)
+        assert display_name is not None
+
+        entity = await self._find_stock(
+            session,
+            stock_id=action.id,
+            ingredient_id=ingredient.id if ingredient else None,
+            name=display_name if not ingredient else None,
+        )
+
+        payload = {
+            "name": display_name,
+            "ingredient_id": ingredient.id if ingredient else None,
+            "amount": action.amount,
+            "unit": action.unit,
+            "comments": action.comments,
+        }
+
+        if entity is None:
+            entity = StockItem(id=action.id or _new_id(), name=display_name)
+            session.add(entity)
+            for key, value in payload.items():
+                setattr(entity, key, value)
+            await session.flush()
+            return ActionResult(op=action.op, status="created", id=entity.id)
+
+        _patch(entity, payload, action.clear_fields)
+        await session.flush()
+        return ActionResult(op=action.op, status="updated", id=entity.id)
+
+    async def _remove_stock(self, session: AsyncSession, action: StockRemove) -> ActionResult:
+        entity = await self._find_stock(
+            session,
+            stock_id=action.id,
+            ingredient_id=action.ingredient_id,
+            ingredient_name=action.ingredient_name,
+            name=action.name,
+        )
+        if entity is None:
+            raise ValueError("stock item not found")
+        item_id = entity.id
+        await session.delete(entity)
+        await session.flush()
+        return ActionResult(op=action.op, status="deleted", id=item_id)
+
     async def _shopping_add(self, session: AsyncSession, action: ShoppingAdd) -> ActionResult:
         name = action.name
         category = action.category
@@ -675,7 +759,7 @@ class ImportEngine:
         item = ShoppingItem(
             id=_new_id(),
             product_id=product_id,
-            name=name.strip(),
+            name=normalize_entity_name(name),
             category=category,
             is_bought=False,
         )

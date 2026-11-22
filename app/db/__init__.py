@@ -1,5 +1,6 @@
 from app.db.models import (
     Base,
+    Delivery,
     Dish,
     DishIngredient,
     DishVersion,
@@ -8,11 +9,13 @@ from app.db.models import (
     Ingredient,
     Product,
     ShoppingItem,
+    StockItem,
 )
 from app.db.session import get_session_factory, init_db
 
 __all__ = [
     "Base",
+    "Delivery",
     "Dish",
     "DishIngredient",
     "DishVersion",
@@ -21,6 +24,7 @@ __all__ = [
     "Ingredient",
     "Product",
     "ShoppingItem",
+    "StockItem",
     "get_session_factory",
     "init_db",
 ]

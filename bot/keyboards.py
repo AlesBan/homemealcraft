@@ -17,6 +17,7 @@ BOT_COMMANDS = [
     BotCommand(command="dishes", description="Блюда"),
     BotCommand(command="preps", description="Заготовки"),
     BotCommand(command="deliveries", description="Доставки"),
+    BotCommand(command="stock", description="Кладовая"),
     BotCommand(command="shopping", description="Покупки"),
 ]
 
@@ -26,6 +27,7 @@ BTN_PRODUCTS = "📦 Продукты"
 BTN_DISHES = "🍽 Блюда"
 BTN_PREPS = "🫙 Заготовки"
 BTN_DELIVERIES = "🛵 Доставки"
+BTN_STOCK = "🧺 Кладовая"
 BTN_SHOPPING = "🛒 Покупки"
 BTN_HELP = "❓ JSON"
 
@@ -44,8 +46,9 @@ def main_keyboard() -> ReplyKeyboardMarkup:
             ],
             [
                 KeyboardButton(text=BTN_DELIVERIES),
-                KeyboardButton(text=BTN_SHOPPING),
+                KeyboardButton(text=BTN_STOCK),
             ],
+            [KeyboardButton(text=BTN_SHOPPING)],
         ],
         resize_keyboard=True,
     )
@@ -66,7 +69,7 @@ def catalog_list_keyboard(
     pages: int = 1,
     query: str | None = None,
 ) -> InlineKeyboardMarkup:
-    """kind: ing | prod | dish | prep | deliv | shop; items: (id, label)."""
+    """kind: ing | prod | dish | prep | deliv | stock | shop; items: (id, label)."""
     rows: list[list[InlineKeyboardButton]] = []
     for item_id, label in items:
         rows.append(
@@ -115,6 +118,7 @@ def back_to_list_keyboard(kind: str) -> InlineKeyboardMarkup:
         "dish": "← К блюдам",
         "prep": "← К заготовкам",
         "deliv": "← К доставкам",
+        "stock": "← К кладовой",
         "shop": "← К покупкам",
     }
     return InlineKeyboardMarkup(
@@ -239,5 +243,19 @@ def shopping_card_keyboard(item_id: str) -> InlineKeyboardMarkup:
                 ),
             ],
             [InlineKeyboardButton(text="← К покупкам", callback_data="list:shop")],
+        ]
+    )
+
+
+def stock_card_keyboard(item_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🗑 Убрать из кладовой",
+                    callback_data=f"stockrm:{item_id}",
+                )
+            ],
+            [InlineKeyboardButton(text="← К кладовой", callback_data="list:stock")],
         ]
     )

@@ -191,7 +191,7 @@ class Delivery(Base):
     __tablename__ = "deliveries"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     category: Mapped[str | None] = mapped_column(String(64), nullable=True)
     url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -200,6 +200,27 @@ class Delivery(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )
+
+
+class StockItem(Base):
+    """Pantry: what we currently have at home."""
+
+    __tablename__ = "stock_items"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    ingredient_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("ingredients.id"), nullable=True, unique=True, index=True
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    unit: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    comments: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+    ingredient: Mapped[Ingredient | None] = relationship()
 
 
 class ImportEvent(Base):
