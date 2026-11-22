@@ -24,6 +24,7 @@ from bot.keyboards import (
     BTN_HELP,
     BTN_HOME,
     BTN_INGREDIENTS,
+    BTN_PREPS,
     BTN_PRODUCTS,
     BTN_SHOPPING,
     back_to_list_keyboard,
@@ -31,6 +32,8 @@ from bot.keyboards import (
     dish_card_keyboard,
     main_keyboard,
 )
+
+PREP_CATEGORY = "prep"
 
 log = logging.getLogger("homemealcraft")
 router = Router()
@@ -226,8 +229,13 @@ def _format_dish_card(dish: Dish, version: DishVersion | None = None) -> str:
 
     if versions:
         lines.append("")
-        lines.append("Переключайте версии кнопками ниже — это одно блюдо.")
+        noun = "заготовка" if (dish.category or "") == PREP_CATEGORY else "блюдо"
+        lines.append(f"Переключайте версии кнопками ниже — это одна {noun}.")
     return "\n".join(lines)
+
+
+def _dish_list_kind(dish: Dish) -> str:
+    return "prep" if (dish.category or "") == PREP_CATEGORY else "dish"
 
 
 async def _show_dish_card(
@@ -247,6 +255,7 @@ async def _show_dish_card(
         dish.id,
         versions,
         selected_version_id=version.id if version else None,
+        list_kind=_dish_list_kind(dish),
     )
     if edit:
         try:
@@ -329,7 +338,7 @@ async def _send_products_list(target: Message, catalog: CatalogService) -> None:
 async def _send_dishes_list(
     target: Message, catalog: CatalogService, *, edit: bool = False
 ) -> None:
-    rows = await catalog.list_dishes()
+    rows = await catalog.list_dishes(exclude_category=PREP_CATEGORY)
     if not rows:
         text = "Блюд пока нет. Пришлите JSON."
         if edit:
@@ -347,6 +356,36 @@ async def _send_dishes_list(
         buttons.append((dish.id, label))
     text = "<b>Блюда</b>\nОдно блюдо = одна карточка. Версии рецепта — внутри."
     markup = catalog_list_keyboard("dish", buttons)
+    if edit:
+        try:
+            await target.edit_text(text, reply_markup=markup)
+            return
+        except Exception:  # noqa: BLE001
+            pass
+    await target.answer(text, reply_markup=markup)
+
+
+async def _send_preps_list(
+    target: Message, catalog: CatalogService, *, edit: bool = False
+) -> None:
+    rows = await catalog.list_dishes(category=PREP_CATEGORY)
+    if not rows:
+        text = "Заготовок пока нет. Пришлите JSON с category: \"prep\"."
+        if edit:
+            try:
+                await target.edit_text(text)
+                return
+            except Exception:  # noqa: BLE001
+                pass
+        await target.answer(text)
+        return
+    buttons = [(dish.id, dish.name) for dish in rows]
+    text = (
+        "<b>Заготовки</b>\n"
+        "Те же поля, что у блюд (состав, версии). В JSON: "
+        '<code>dish.upsert</code> + <code>category: "prep"</code>.'
+    )
+    markup = catalog_list_keyboard("prep", buttons)
     if edit:
         try:
             await target.edit_text(text, reply_markup=markup)
@@ -435,8 +474,8 @@ async def cmd_help(message: Message) -> None:
         "<b>Импорт JSON</b>\n\n"
         "1. /rules — скачайте правила для ИИ-агента\n"
         "2. Вставьте их в system prompt агента\n"
-        "3. Надиктуйте блюдо/продукт/доставку → пришлите JSON боту\n\n"
-        "Блюда, продукты и доставки отдельно. Версии рецепта — внутри одного блюда. БЖУ на 100 г."
+        "3. Надиктуйте блюдо/заготовку/продукт/доставку → пришлите JSON боту\n\n"
+        "Заготовки = dish.upsert + category prep. Версии рецепта — внутри карточки. БЖУ на 100 г."
     )
 
 
@@ -477,6 +516,12 @@ async def cmd_dishes(message: Message, catalog: CatalogService) -> None:
     await _send_dishes_list(message, catalog)
 
 
+@router.message(Command("preps"))
+@router.message(F.text == BTN_PREPS)
+async def cmd_preps(message: Message, catalog: CatalogService) -> None:
+    await _send_preps_list(message, catalog)
+
+
 @router.message(Command("deliveries"))
 @router.message(F.text == BTN_DELIVERIES)
 async def cmd_deliveries(message: Message, catalog: CatalogService) -> None:
@@ -508,6 +553,8 @@ async def on_back_to_list(callback: CallbackQuery, catalog: CatalogService) -> N
         await _send_products_list(message, catalog)
     elif kind == "dish":
         await _send_dishes_list(message, catalog, edit=True)
+    elif kind == "prep":
+        await _send_preps_list(message, catalog, edit=True)
     elif kind == "deliv":
         await _send_deliveries_list(message, catalog, edit=True)
     elif kind == "shop":
@@ -551,6 +598,17 @@ async def on_dish(callback: CallbackQuery, catalog: CatalogService) -> None:
         return
     await callback.answer()
     # Open dish inside the same message (list → card → versions all one bubble)
+    await _show_dish_card(callback.message, item, edit=True)
+
+
+@router.callback_query(F.data.startswith("prep:"))
+async def on_prep(callback: CallbackQuery, catalog: CatalogService) -> None:
+    item_id = (callback.data or "")[5:]
+    item = await catalog.get_dish(item_id)
+    if not item or not isinstance(callback.message, Message):
+        await callback.answer("Не найдено", show_alert=True)
+        return
+    await callback.answer()
     await _show_dish_card(callback.message, item, edit=True)
 
 

@@ -9,6 +9,7 @@ from bot.keyboards import (
     BTN_HELP,
     BTN_HOME,
     BTN_INGREDIENTS,
+    BTN_PREPS,
     BTN_PRODUCTS,
     BTN_SHOPPING,
 )
@@ -19,6 +20,7 @@ MENU_BUTTONS = {
     BTN_INGREDIENTS,
     BTN_PRODUCTS,
     BTN_DISHES,
+    BTN_PREPS,
     BTN_DELIVERIES,
     BTN_SHOPPING,
 }

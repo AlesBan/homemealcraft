@@ -37,14 +37,27 @@ class CatalogService:
             )
             return list(rows)
 
-    async def list_dishes(self, limit: int = 30) -> list[Dish]:
+    async def list_dishes(
+        self,
+        limit: int = 30,
+        *,
+        category: str | None = None,
+        exclude_category: str | None = None,
+    ) -> list[Dish]:
         async with self._session_factory() as session:
-            rows = await session.scalars(
+            stmt = (
                 select(Dish)
                 .options(selectinload(Dish.ingredients).selectinload(DishIngredient.ingredient))
                 .order_by(Dish.name)
                 .limit(limit)
             )
+            if category is not None:
+                stmt = stmt.where(Dish.category == category)
+            if exclude_category is not None:
+                stmt = stmt.where(
+                    (Dish.category.is_(None)) | (Dish.category != exclude_category)
+                )
+            rows = await session.scalars(stmt)
             return list(rows)
 
     async def list_shopping(

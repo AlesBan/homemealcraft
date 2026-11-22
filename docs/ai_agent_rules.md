@@ -26,13 +26,15 @@
 | Что прислали | Op |
 |--------------|-----|
 | Новое блюдо / первый рецепт | `dish.upsert` + при необходимости `ingredient.upsert` |
-| «Новая версия …» того же блюда | `dish_version.create` (то же имя блюда!) |
+| Заготовка (бульон, соус впрок, заморозка…) | `dish.upsert` с `"category": "prep"` |
+| «Новая версия …» того же блюда/заготовки | `dish_version.create` (то же имя!) |
 | Товар / этикетка / штрихкод / КБЖУ | `product.upsert` (+ вид через `ingredient_name`) |
 | Ссылка / «заказывать тут» / сервис доставки | `delivery.upsert` |
 | «Нужно купить» | `shopping.add` |
 | «Удали версию» | `dish_version.delete` только по явной просьбе |
 
 Готовят с несколькими компонентами → блюдо.  
+Готовят впрок / база / заморозка / консервация → заготовка (`category: "prep"`), те же поля что у блюда.  
 Покупают готовым / этикетка / barcode → продукт.  
 Не готовим, а заказываем снаружи → доставка.
 
@@ -108,8 +110,10 @@
 | `result_comment` | Отзыв о результате, если сразу новая версия | `"суховатые"` |
 | `id` | UUID блюда | |
 
-`category` блюда:  
-`breakfast` завтраки · `soup` супы · `main` основные · `side` гарниры · `salad` салаты · `bakery` выпечка · `dessert` десерты · `quick` быстрые · `prep` заготовки.
+`category` блюда (раздел «Блюда»):  
+`breakfast` завтраки · `soup` супы · `main` основные · `side` гарниры · `salad` салаты · `bakery` выпечка · `dessert` десерты · `quick` быстрые.
+
+`category: "prep"` — **заготовка**: попадает в отдельный раздел «Заготовки» (не в «Блюда»). Поля те же, что у блюда (состав, версии, БЖУ…).
 
 ### Строка состава `ingredients[]`
 
@@ -229,6 +233,37 @@
         { "ingredient_name": "Творог", "amount": 200, "unit": "g" },
         { "ingredient_name": "Яйцо", "amount": 100, "unit": "g", "note": "2 шт" },
         { "ingredient_name": "Мука", "amount": 40, "unit": "g" }
+      ]
+    }
+  ]
+}
+```
+
+### Заготовка
+
+«Куриный бульон впрок, 2 часа, замораживаем»
+
+```json
+{
+  "schema_version": "1.0",
+  "idempotency_key": "2026-11-22-prep-chicken-stock",
+  "source": "deepseek",
+  "actions": [
+    { "op": "ingredient.upsert", "name": "Курица", "category": "meat" },
+    { "op": "ingredient.upsert", "name": "Морковь", "category": "vegetables" },
+    { "op": "ingredient.upsert", "name": "Лук", "category": "vegetables" },
+    {
+      "op": "dish.upsert",
+      "name": "Куриный бульон",
+      "category": "prep",
+      "cook_time_min": 120,
+      "servings": 8,
+      "freezable": true,
+      "instructions": "Варить на слабом огне, процедить, разлить по контейнерам",
+      "ingredients": [
+        { "ingredient_name": "Курица", "amount": 1000, "unit": "g" },
+        { "ingredient_name": "Морковь", "amount": 200, "unit": "g" },
+        { "ingredient_name": "Лук", "amount": 150, "unit": "g" }
       ]
     }
   ]
