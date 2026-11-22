@@ -185,6 +185,23 @@ class ShoppingItem(Base):
     product: Mapped[Product | None] = relationship(back_populates="shopping_items")
 
 
+class Delivery(Base):
+    """Where to order: link and/or free-text note with comments."""
+
+    __tablename__ = "deliveries"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    comments: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
 class ImportEvent(Base):
     __tablename__ = "import_events"
 

@@ -4,6 +4,7 @@ from aiogram.filters import BaseFilter
 from aiogram.types import Message
 
 from bot.keyboards import (
+    BTN_DELIVERIES,
     BTN_DISHES,
     BTN_HELP,
     BTN_HOME,
@@ -18,6 +19,7 @@ MENU_BUTTONS = {
     BTN_INGREDIENTS,
     BTN_PRODUCTS,
     BTN_DISHES,
+    BTN_DELIVERIES,
     BTN_SHOPPING,
 }
 

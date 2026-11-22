@@ -12,13 +12,14 @@ from pydantic import ValidationError
 
 from zoneinfo import ZoneInfo
 
-from app.db.models import Dish, DishVersion, Ingredient, Product, ShoppingItem
+from app.db.models import Delivery, Dish, DishVersion, Ingredient, Product, ShoppingItem
 from app.domain.catalog import CatalogService
 from app.domain.import_engine import ImportEngine
 from app.domain.json_extract import extract_json_object
 from app.domain.schemas import ImportPacket
 from bot.filters import IsJsonPayload, IsUnknownText
 from bot.keyboards import (
+    BTN_DELIVERIES,
     BTN_DISHES,
     BTN_HELP,
     BTN_HOME,
@@ -44,6 +45,13 @@ DISH_CATEGORY_RU = {
     "dessert": "Десерты",
     "quick": "Быстрые",
     "prep": "Заготовки",
+}
+
+DELIVERY_CATEGORY_RU = {
+    "food": "Еда",
+    "grocery": "Продукты",
+    "pharmacy": "Аптека",
+    "other": "Прочее",
 }
 
 
@@ -272,6 +280,22 @@ def _format_shopping(item: ShoppingItem) -> str:
     return "\n".join(lines)
 
 
+def _format_delivery(item: Delivery) -> str:
+    cat = DELIVERY_CATEGORY_RU.get(item.category or "", item.category)
+    lines = [f"<b>{item.name}</b>"]
+    if cat:
+        lines.append(f"Категория: {cat}")
+    if item.url:
+        lines.append(f'<a href="{item.url}">Ссылка</a>')
+        lines.append(item.url)
+    if item.description:
+        lines.append("")
+        lines.append(item.description)
+    if item.comments:
+        lines.append(f"Комментарий: {item.comments}")
+    return "\n".join(lines)
+
+
 def _product_button_label(item: Product) -> str:
     if item.brand:
         return f"{item.name} · {item.brand}"
@@ -344,6 +368,36 @@ async def _send_shopping_list(target: Message, catalog: CatalogService) -> None:
     )
 
 
+async def _send_deliveries_list(
+    target: Message, catalog: CatalogService, *, edit: bool = False
+) -> None:
+    rows = await catalog.list_deliveries()
+    if not rows:
+        text = "Доставок пока нет. Пришлите JSON."
+        if edit:
+            try:
+                await target.edit_text(text)
+                return
+            except Exception:  # noqa: BLE001
+                pass
+        await target.answer(text)
+        return
+    buttons = []
+    for item in rows:
+        cat = DELIVERY_CATEGORY_RU.get(item.category or "", item.category)
+        label = f"{item.name}" + (f" · {cat}" if cat else "")
+        buttons.append((item.id, label))
+    text = "<b>Доставки</b>\nГде что заказывать — ссылки и заметки."
+    markup = catalog_list_keyboard("deliv", buttons)
+    if edit:
+        try:
+            await target.edit_text(text, reply_markup=markup)
+            return
+        except Exception:  # noqa: BLE001
+            pass
+    await target.answer(text, reply_markup=markup)
+
+
 @router.message(CommandStart())
 @router.message(F.text == BTN_HOME)
 async def cmd_start(message: Message) -> None:
@@ -381,8 +435,8 @@ async def cmd_help(message: Message) -> None:
         "<b>Импорт JSON</b>\n\n"
         "1. /rules — скачайте правила для ИИ-агента\n"
         "2. Вставьте их в system prompt агента\n"
-        "3. Надиктуйте блюдо/продукт → пришлите JSON боту\n\n"
-        "Блюда и продукты отдельно. Версии рецепта — внутри одного блюда. БЖУ на 100 г."
+        "3. Надиктуйте блюдо/продукт/доставку → пришлите JSON боту\n\n"
+        "Блюда, продукты и доставки отдельно. Версии рецепта — внутри одного блюда. БЖУ на 100 г."
     )
 
 
@@ -423,6 +477,12 @@ async def cmd_dishes(message: Message, catalog: CatalogService) -> None:
     await _send_dishes_list(message, catalog)
 
 
+@router.message(Command("deliveries"))
+@router.message(F.text == BTN_DELIVERIES)
+async def cmd_deliveries(message: Message, catalog: CatalogService) -> None:
+    await _send_deliveries_list(message, catalog)
+
+
 @router.message(Command("shopping"))
 @router.message(F.text == BTN_SHOPPING)
 async def cmd_shopping(message: Message, catalog: CatalogService) -> None:
@@ -448,6 +508,8 @@ async def on_back_to_list(callback: CallbackQuery, catalog: CatalogService) -> N
         await _send_products_list(message, catalog)
     elif kind == "dish":
         await _send_dishes_list(message, catalog, edit=True)
+    elif kind == "deliv":
+        await _send_deliveries_list(message, catalog, edit=True)
     elif kind == "shop":
         await _send_shopping_list(message, catalog)
 
@@ -537,6 +599,21 @@ async def on_shopping(callback: CallbackQuery, catalog: CatalogService) -> None:
     await callback.message.answer(
         _format_shopping(item),
         reply_markup=back_to_list_keyboard("shop"),
+    )
+
+
+@router.callback_query(F.data.startswith("deliv:"))
+async def on_delivery(callback: CallbackQuery, catalog: CatalogService) -> None:
+    item_id = (callback.data or "")[6:]
+    item = await catalog.get_delivery(item_id)
+    if not item or not callback.message:
+        await callback.answer("Не найдено", show_alert=True)
+        return
+    await callback.answer()
+    await callback.message.answer(
+        _format_delivery(item),
+        reply_markup=back_to_list_keyboard("deliv"),
+        disable_web_page_preview=False,
     )
 
 

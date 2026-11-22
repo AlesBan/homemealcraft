@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
 from app.db.models import (
+    Delivery,
     Dish,
     DishIngredient,
     DishVersion,
@@ -57,6 +58,13 @@ class CatalogService:
                 stmt = stmt.where(ShoppingItem.is_bought.is_(False))
             rows = await session.scalars(
                 stmt.order_by(ShoppingItem.created_at.desc()).limit(limit)
+            )
+            return list(rows)
+
+    async def list_deliveries(self, limit: int = 50) -> list[Delivery]:
+        async with self._session_factory() as session:
+            rows = await session.scalars(
+                select(Delivery).order_by(Delivery.name).limit(limit)
             )
             return list(rows)
 
@@ -131,3 +139,7 @@ class CatalogService:
                 .where(ShoppingItem.id == item_id)
                 .options(selectinload(ShoppingItem.product).selectinload(Product.ingredient))
             )
+
+    async def get_delivery(self, item_id: str) -> Delivery | None:
+        async with self._session_factory() as session:
+            return await session.get(Delivery, item_id)

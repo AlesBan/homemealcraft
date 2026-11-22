@@ -59,6 +59,15 @@ SAMPLE = {
             "op": "shopping.add",
             "product_id": "33333333-3333-3333-3333-333333333333",
         },
+        {
+            "op": "delivery.upsert",
+            "id": "44444444-4444-4444-4444-444444444444",
+            "name": "Пицца Dominos",
+            "category": "food",
+            "url": "https://dominos.example/",
+            "description": "Маргарита + чеснок",
+            "comments": "~40 мин",
+        },
     ],
 }
 
@@ -97,6 +106,7 @@ async def main() -> None:
     products = await catalog.list_products()
     dishes = await catalog.list_dishes()
     shopping = await catalog.list_shopping()
+    deliveries = await catalog.list_deliveries()
     print("products:", [(p.brand, p.kcal, p.ingredient.name if p.ingredient else None) for p in products])
     print(
         "dishes:",
@@ -109,6 +119,7 @@ async def main() -> None:
         ],
     )
     print("shopping:", [(s.name, s.product.ingredient.name if s.product and s.product.ingredient else None) for s in shopping])
+    print("deliveries:", [(d.name, d.url, d.category) for d in deliveries])
 
 
 if __name__ == "__main__":

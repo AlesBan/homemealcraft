@@ -8,6 +8,7 @@ OP_ALIASES = {
     "ingredient.create": "ingredient.upsert",
     "product.create": "product.upsert",
     "dish.create": "dish.upsert",
+    "delivery.create": "delivery.upsert",
     "dish_version.add": "dish_version.create",
 }
 
@@ -120,6 +121,19 @@ class DishVersionDelete(BaseModel):
         raise ValueError("version_id or (dish_name + keep_current_only) required")
 
 
+class DeliveryUpsert(BaseModel):
+    """Bookmark: where / what to order (link and/or text) + comments."""
+
+    op: Literal["delivery.upsert"] = "delivery.upsert"
+    id: str | None = None
+    name: str
+    category: str | None = None
+    url: str | None = None
+    description: str | None = None
+    comments: str | None = None
+    clear_fields: list[str] = Field(default_factory=list)
+
+
 class ShoppingAdd(BaseModel):
     op: Literal["shopping.add"] = "shopping.add"
     product_id: str | None = None
@@ -153,6 +167,7 @@ Action = (
     | DishUpsert
     | DishVersionCreate
     | DishVersionDelete
+    | DeliveryUpsert
     | ShoppingAdd
     | ShoppingCheck
     | ShoppingRemove
@@ -164,6 +179,7 @@ _ACTION_BY_OP: dict[str, type[BaseModel]] = {
     "dish.upsert": DishUpsert,
     "dish_version.create": DishVersionCreate,
     "dish_version.delete": DishVersionDelete,
+    "delivery.upsert": DeliveryUpsert,
     "shopping.add": ShoppingAdd,
     "shopping.check": ShoppingCheck,
     "shopping.remove": ShoppingRemove,

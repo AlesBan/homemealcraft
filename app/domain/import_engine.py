@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
 from app.db.models import (
+    Delivery,
     Dish,
     DishIngredient,
     DishVersion,
@@ -25,6 +26,7 @@ from app.db.models import (
     ShoppingItem,
 )
 from app.domain.schemas import (
+    DeliveryUpsert,
     DishIngredientLine,
     DishUpsert,
     DishVersionCreate,
@@ -94,6 +96,7 @@ class ImportReport:
             "ingredient.upsert": "ингредиенты",
             "product.upsert": "продукты",
             "dish.upsert": "блюда",
+            "delivery.upsert": "доставки",
             "dish_version.create": "версии рецептов",
             "dish_version.delete": "удалены версии",
             "shopping.add": "покупки",
@@ -156,6 +159,8 @@ class ImportEngine:
                         results.append(await self._create_dish_version(session, action))
                     elif isinstance(action, DishVersionDelete):
                         results.append(await self._delete_dish_version(session, action))
+                    elif isinstance(action, DeliveryUpsert):
+                        results.append(await self._upsert_delivery(session, action))
                     elif isinstance(action, ShoppingAdd):
                         results.append(await self._shopping_add(session, action))
                     elif isinstance(action, ShoppingCheck):
@@ -616,6 +621,37 @@ class ImportEngine:
             id=dish.id,
             detail=f"removed {deleted} old versions",
         )
+
+    async def _upsert_delivery(
+        self, session: AsyncSession, action: DeliveryUpsert
+    ) -> ActionResult:
+        entity: Delivery | None = None
+        if action.id:
+            entity = await session.get(Delivery, action.id)
+        else:
+            entity = await session.scalar(
+                select(Delivery).where(Delivery.name == action.name.strip())
+            )
+
+        payload = {
+            "name": action.name.strip(),
+            "category": action.category,
+            "url": action.url.strip() if action.url else None,
+            "description": action.description,
+            "comments": action.comments,
+        }
+
+        if entity is None:
+            entity = Delivery(id=action.id or _new_id(), name=payload["name"])
+            session.add(entity)
+            for key, value in payload.items():
+                setattr(entity, key, value)
+            await session.flush()
+            return ActionResult(op=action.op, status="created", id=entity.id)
+
+        _patch(entity, payload, action.clear_fields)
+        await session.flush()
+        return ActionResult(op=action.op, status="updated", id=entity.id)
 
     async def _shopping_add(self, session: AsyncSession, action: ShoppingAdd) -> ActionResult:
         name = action.name

@@ -15,6 +15,7 @@ BOT_COMMANDS = [
     BotCommand(command="ingredients", description="Ингредиенты"),
     BotCommand(command="products", description="Продукты"),
     BotCommand(command="dishes", description="Блюда"),
+    BotCommand(command="deliveries", description="Доставки"),
     BotCommand(command="shopping", description="Покупки"),
 ]
 
@@ -22,6 +23,7 @@ BTN_HOME = "🏠 Главная"
 BTN_INGREDIENTS = "🥕 Ингредиенты"
 BTN_PRODUCTS = "📦 Продукты"
 BTN_DISHES = "🍽 Блюда"
+BTN_DELIVERIES = "🛵 Доставки"
 BTN_SHOPPING = "🛒 Покупки"
 BTN_HELP = "❓ JSON"
 
@@ -36,8 +38,9 @@ def main_keyboard() -> ReplyKeyboardMarkup:
             ],
             [
                 KeyboardButton(text=BTN_DISHES),
-                KeyboardButton(text=BTN_SHOPPING),
+                KeyboardButton(text=BTN_DELIVERIES),
             ],
+            [KeyboardButton(text=BTN_SHOPPING)],
         ],
         resize_keyboard=True,
     )
@@ -53,7 +56,7 @@ def _clip(text: str, limit: int = 56) -> str:
 def catalog_list_keyboard(
     kind: str, items: list[tuple[str, str]]
 ) -> InlineKeyboardMarkup:
-    """kind: ing | prod | dish | shop; items: (id, label)."""
+    """kind: ing | prod | dish | deliv | shop; items: (id, label)."""
     rows: list[list[InlineKeyboardButton]] = []
     for item_id, label in items:
         rows.append(
@@ -72,6 +75,7 @@ def back_to_list_keyboard(kind: str) -> InlineKeyboardMarkup:
         "ing": "← К ингредиентам",
         "prod": "← К продуктам",
         "dish": "← К блюдам",
+        "deliv": "← К доставкам",
         "shop": "← К покупкам",
     }
     return InlineKeyboardMarkup(
