@@ -26,6 +26,8 @@ SYNC_ITEMS = [
     "bot",
     "app",
     "docs",
+    "tests",
+    "scripts",
     "requirements.txt",
     "deploy/homemealcraft-bot.service",
     ".env.example",

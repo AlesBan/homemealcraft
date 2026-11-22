@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -36,7 +36,6 @@ class Ingredient(Base):
     )
 
     products: Mapped[list[Product]] = relationship(back_populates="ingredient")
-    dish_links: Mapped[list[DishIngredient]] = relationship(back_populates="ingredient")
 
 
 class Product(Base):
@@ -91,32 +90,12 @@ class Dish(Base):
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )
 
-    ingredients: Mapped[list[DishIngredient]] = relationship(
-        back_populates="dish", cascade="all, delete-orphan"
-    )
     versions: Mapped[list[DishVersion]] = relationship(
         back_populates="dish",
         cascade="all, delete-orphan",
         foreign_keys="DishVersion.dish_id",
         order_by="DishVersion.created_at.desc()",
     )
-
-
-class DishIngredient(Base):
-    __tablename__ = "dish_ingredients"
-    __table_args__ = (UniqueConstraint("dish_id", "ingredient_id", name="uq_dish_ingredient"),)
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    dish_id: Mapped[str] = mapped_column(String(36), ForeignKey("dishes.id"), nullable=False)
-    ingredient_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("ingredients.id"), nullable=False
-    )
-    amount: Mapped[float | None] = mapped_column(Float, nullable=True)
-    unit: Mapped[str] = mapped_column(String(16), default="g")
-    note: Mapped[str | None] = mapped_column(String(255), nullable=True)
-
-    dish: Mapped[Dish] = relationship(back_populates="ingredients")
-    ingredient: Mapped[Ingredient] = relationship(back_populates="dish_links")
 
 
 class DishVersion(Base):
@@ -177,12 +156,16 @@ class ShoppingItem(Base):
     product_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("products.id"), nullable=True, index=True
     )
+    ingredient_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("ingredients.id"), nullable=True, index=True
+    )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     category: Mapped[str | None] = mapped_column(String(64), nullable=True)
     is_bought: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     product: Mapped[Product | None] = relationship(back_populates="shopping_items")
+    ingredient: Mapped[Ingredient | None] = relationship()
 
 
 class Delivery(Base):
@@ -214,6 +197,8 @@ class StockItem(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     amount: Mapped[float | None] = mapped_column(Float, nullable=True)
     unit: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    is_opened: Mapped[bool] = mapped_column(Boolean, default=False)
+    expires_on: Mapped[date | None] = mapped_column(Date, nullable=True)
     comments: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(

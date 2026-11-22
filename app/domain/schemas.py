@@ -138,13 +138,15 @@ class DeliveryUpsert(BaseModel):
 class ShoppingAdd(BaseModel):
     op: Literal["shopping.add"] = "shopping.add"
     product_id: str | None = None
+    ingredient_id: str | None = None
+    ingredient_name: str | None = None
     name: str | None = None
     category: str | None = None
 
     @model_validator(mode="after")
     def require_name_or_product(self) -> ShoppingAdd:
-        if not self.product_id and not self.name:
-            raise ValueError("product_id or name is required")
+        if not self.product_id and not self.name and not self.ingredient_id and not self.ingredient_name:
+            raise ValueError("product_id, ingredient ref or name is required")
         return self
 
 
@@ -172,6 +174,8 @@ class StockUpsert(BaseModel):
     name: str | None = None
     amount: float | None = None
     unit: str | None = None
+    is_opened: bool | None = None
+    expires_on: str | None = None  # YYYY-MM-DD
     comments: str | None = None
     clear_fields: list[str] = Field(default_factory=list)
 

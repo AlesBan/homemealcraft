@@ -233,6 +233,9 @@ class CatalogService:
         ingredient_id: str | None = None,
         amount: float | None = None,
         unit: str | None = None,
+        is_opened: bool | None = None,
+        expires_on=None,
+        add_amount: float | None = None,
     ) -> StockItem:
         async with self._session_factory() as session:
             entity: StockItem | None = None
@@ -251,17 +254,73 @@ class CatalogService:
                 entity.name = name.strip()
                 if ingredient_id:
                     entity.ingredient_id = ingredient_id
-            if amount is not None:
+            if add_amount is not None:
+                entity.amount = (entity.amount or 0) + add_amount
+            elif amount is not None:
                 entity.amount = amount
             if unit is not None:
                 entity.unit = unit
+            if is_opened is not None:
+                entity.is_opened = is_opened
+            if expires_on is not None:
+                entity.expires_on = expires_on
             await session.commit()
             await session.refresh(entity)
             return entity
 
+    async def deduct_stock(
+        self, *, ingredient_id: str | None, name: str, amount: float | None, unit: str | None
+    ) -> str:
+        """Returns status: depleted|deducted|missing."""
+        async with self._session_factory() as session:
+            entity: StockItem | None = None
+            if ingredient_id:
+                entity = await session.scalar(
+                    select(StockItem).where(StockItem.ingredient_id == ingredient_id)
+                )
+            if entity is None:
+                entity = await session.scalar(
+                    select(StockItem).where(StockItem.name.ilike(name.strip()))
+                )
+            if entity is None:
+                return "missing"
+            if amount is not None and entity.amount is not None:
+                entity.amount = max(0.0, entity.amount - amount)
+                if unit:
+                    entity.unit = unit
+                if entity.amount <= 0:
+                    await session.delete(entity)
+                    await session.commit()
+                    return "depleted"
+                await session.commit()
+                return "deducted"
+            await session.delete(entity)
+            await session.commit()
+            return "depleted"
+
+    async def set_stock_opened(self, item_id: str, opened: bool) -> bool:
+        async with self._session_factory() as session:
+            item = await session.get(StockItem, item_id)
+            if item is None:
+                return False
+            item.is_opened = opened
+            await session.commit()
+            return True
+
     async def remove_stock(self, item_id: str) -> bool:
         async with self._session_factory() as session:
             item = await session.get(StockItem, item_id)
+            if item is None:
+                return False
+            await session.delete(item)
+            await session.commit()
+            return True
+
+    async def remove_stock_by_ingredient(self, ingredient_id: str) -> bool:
+        async with self._session_factory() as session:
+            item = await session.scalar(
+                select(StockItem).where(StockItem.ingredient_id == ingredient_id)
+            )
             if item is None:
                 return False
             await session.delete(item)
@@ -282,7 +341,6 @@ class CatalogService:
             )
 
     async def delete_dish_version(self, version_id: str) -> tuple[bool, str | None]:
-        """Manual cleanup. Returns (ok, dish_id)."""
         async with self._session_factory() as session:
             version = await session.get(DishVersion, version_id)
             if version is None:
@@ -307,12 +365,42 @@ class CatalogService:
             await session.commit()
             return True, dish_id
 
+    async def delete_dish(self, dish_id: str) -> bool:
+        async with self._session_factory() as session:
+            dish = await session.get(Dish, dish_id)
+            if dish is None:
+                return False
+            await session.delete(dish)
+            await session.commit()
+            return True
+
+    async def delete_product(self, product_id: str) -> bool:
+        async with self._session_factory() as session:
+            item = await session.get(Product, product_id)
+            if item is None:
+                return False
+            await session.delete(item)
+            await session.commit()
+            return True
+
+    async def delete_delivery(self, delivery_id: str) -> bool:
+        async with self._session_factory() as session:
+            item = await session.get(Delivery, delivery_id)
+            if item is None:
+                return False
+            await session.delete(item)
+            await session.commit()
+            return True
+
     async def get_shopping(self, item_id: str) -> ShoppingItem | None:
         async with self._session_factory() as session:
             return await session.scalar(
                 select(ShoppingItem)
                 .where(ShoppingItem.id == item_id)
-                .options(selectinload(ShoppingItem.product).selectinload(Product.ingredient))
+                .options(
+                    selectinload(ShoppingItem.product).selectinload(Product.ingredient),
+                    selectinload(ShoppingItem.ingredient),
+                )
             )
 
     async def get_delivery(self, item_id: str) -> Delivery | None:
@@ -320,12 +408,19 @@ class CatalogService:
             return await session.get(Delivery, item_id)
 
     async def add_shopping_by_name(
-        self, name: str, *, category: str | None = None
+        self,
+        name: str,
+        *,
+        category: str | None = None,
+        ingredient_id: str | None = None,
+        product_id: str | None = None,
     ) -> ShoppingItem:
         async with self._session_factory() as session:
             item = ShoppingItem(
                 name=name.strip(),
                 category=category,
+                ingredient_id=ingredient_id,
+                product_id=product_id,
                 is_bought=False,
             )
             session.add(item)
@@ -333,12 +428,53 @@ class CatalogService:
             await session.refresh(item)
             return item
 
-    async def mark_shopping_bought(self, item_id: str) -> bool:
+    async def mark_shopping_bought(self, item_id: str, *, to_stock: bool = True) -> bool:
         async with self._session_factory() as session:
-            item = await session.get(ShoppingItem, item_id)
+            item = await session.scalar(
+                select(ShoppingItem)
+                .where(ShoppingItem.id == item_id)
+                .options(
+                    selectinload(ShoppingItem.product).selectinload(Product.ingredient),
+                    selectinload(ShoppingItem.ingredient),
+                )
+            )
             if item is None:
                 return False
             item.is_bought = True
+            if to_stock:
+                ing_id = item.ingredient_id
+                name = item.name
+                unit = None
+                amount = None
+                if item.product:
+                    if item.product.ingredient_id:
+                        ing_id = item.product.ingredient_id
+                    if item.product.ingredient:
+                        name = item.product.ingredient.name
+                    amount = item.product.weight_g
+                    unit = "g" if amount is not None else None
+                elif item.ingredient:
+                    name = item.ingredient.name
+                    ing_id = item.ingredient.id
+                stock: StockItem | None = None
+                if ing_id:
+                    stock = await session.scalar(
+                        select(StockItem).where(StockItem.ingredient_id == ing_id)
+                    )
+                if stock is None:
+                    stock = await session.scalar(
+                        select(StockItem).where(StockItem.name.ilike(name))
+                    )
+                if stock is None:
+                    stock = StockItem(name=name, ingredient_id=ing_id)
+                    session.add(stock)
+                else:
+                    stock.name = name
+                    if ing_id:
+                        stock.ingredient_id = ing_id
+                if amount is not None:
+                    stock.amount = (stock.amount or 0) + amount
+                    stock.unit = unit or stock.unit or "g"
             await session.commit()
             return True
 
@@ -350,3 +486,30 @@ class CatalogService:
             await session.delete(item)
             await session.commit()
             return True
+
+    async def deduct_dish_from_stock(self, dish_id: str) -> dict[str, int]:
+        """Deduct current version composition from pantry. Returns counters."""
+        dish = await self.get_dish(dish_id)
+        stats = {"deducted": 0, "depleted": 0, "missing": 0}
+        if not dish:
+            return stats
+        version = None
+        for v in dish.versions or []:
+            if v.is_current:
+                version = v
+                break
+        if version is None and dish.versions:
+            version = dish.versions[0]
+        if not version:
+            return stats
+        for link in version.ingredients or []:
+            if not link.ingredient:
+                continue
+            status = await self.deduct_stock(
+                ingredient_id=link.ingredient_id,
+                name=link.ingredient.name,
+                amount=link.amount,
+                unit=link.unit,
+            )
+            stats[status] = stats.get(status, 0) + 1
+        return stats

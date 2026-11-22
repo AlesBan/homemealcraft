@@ -34,6 +34,9 @@ from bot.keyboards import (
     dish_card_keyboard,
     main_keyboard,
     need_checklist_keyboard,
+    confirm_keyboard,
+    delivery_card_keyboard,
+    product_card_keyboard,
     shopping_card_keyboard,
     stock_card_keyboard,
 )
@@ -289,11 +292,13 @@ def _format_shopping(item: ShoppingItem) -> str:
         lines.append(f"Категория: {shelf}")
     elif item.category:
         lines.append(f"Категория: {item.category}")
+    if item.ingredient:
+        lines.append(f"Вид: {item.ingredient.name}")
     if item.product:
         brand = f" ({item.product.brand})" if item.product.brand else ""
         lines.append(f"Продукт: {item.product.name}{brand}")
-        if item.product.ingredient:
-            lines.append(f"Тип: {item.product.ingredient.name}")
+        if item.product.ingredient and not item.ingredient:
+            lines.append(f"Вид: {item.product.ingredient.name}")
     return "\n".join(lines)
 
 
@@ -325,6 +330,9 @@ def _format_stock(item: StockItem) -> str:
         lines.append(f"Количество: {item.amount:g} {unit}")
     elif item.unit:
         lines.append(f"Ед.: {item.unit}")
+    lines.append(f"Открыто: {'да' if item.is_opened else 'нет'}")
+    if item.expires_on:
+        lines.append(f"Годен до: {item.expires_on.isoformat()}")
     if item.comments:
         lines.append(f"Комментарий: {item.comments}")
     return "\n".join(lines)
@@ -513,13 +521,17 @@ async def _show_need_checklist(
 
     lines = [
         f"<b>{dish.name}</b> — проверить состав",
-        "Есть — в кладовую. В покупки — в список покупок.",
+        "Нет в кладовой: Есть → кладовая / В покупки.",
+        "Уже в кладовой: Ещё есть / Кончилось → покупки.",
         "",
     ]
+    items: list[tuple[str, str, bool]] = []
     for ing_id, label in remaining:
-        mark = " · в кладовой" if ing_id in stock_ids else ""
+        has = ing_id in stock_ids
+        mark = " · в кладовой" if has else ""
         lines.append(f"· {label}{mark}")
-    markup = need_checklist_keyboard(dish.id, remaining)
+        items.append((ing_id, label, has))
+    markup = need_checklist_keyboard(dish.id, items)
     await _edit_or_answer(target, "\n".join(lines), markup=markup, edit=edit)
 
 
@@ -765,6 +777,8 @@ async def on_ingredient(callback: CallbackQuery, catalog: CatalogService) -> Non
 @router.callback_query(F.data.startswith("prod:"))
 async def on_product(callback: CallbackQuery, catalog: CatalogService) -> None:
     item_id = (callback.data or "")[5:]
+    if item_id.startswith("del:"):
+        return
     item = await catalog.get_product(item_id)
     if not item or not isinstance(callback.message, Message):
         await callback.answer("Не найдено", show_alert=True)
@@ -773,9 +787,34 @@ async def on_product(callback: CallbackQuery, catalog: CatalogService) -> None:
     await _edit_or_answer(
         callback.message,
         _format_product(item),
-        markup=back_to_list_keyboard("prod"),
+        markup=product_card_keyboard(item.id),
         edit=True,
     )
+
+
+@router.callback_query(F.data.startswith("proddel:"))
+async def on_product_delete_ask(callback: CallbackQuery) -> None:
+    item_id = (callback.data or "")[8:]
+    if not isinstance(callback.message, Message):
+        await callback.answer()
+        return
+    await callback.answer()
+    await callback.message.edit_reply_markup(
+        reply_markup=confirm_keyboard(f"prodok:{item_id}", f"prod:{item_id}")
+    )
+
+
+@router.callback_query(F.data.startswith("prodok:"))
+async def on_product_delete_ok(
+    callback: CallbackQuery, catalog: CatalogService, state: FSMContext
+) -> None:
+    item_id = (callback.data or "")[7:]
+    ok = await catalog.delete_product(item_id)
+    await callback.answer("Удалено" if ok else "Уже нет")
+    if isinstance(callback.message, Message):
+        await _send_catalog_list(
+            callback.message, catalog, "prod", edit=True, state=state
+        )
 
 
 @router.callback_query(F.data.startswith("dish:"))
@@ -955,12 +994,89 @@ async def on_need_buy(
                 name = link.ingredient.name
                 category = link.ingredient.category
                 break
-    await catalog.add_shopping_by_name(name, category=category)
+    await catalog.add_shopping_by_name(
+        name, category=category, ingredient_id=ing_id
+    )
     await state.update_data(need_items=remaining)
     if not dish or not isinstance(callback.message, Message):
         await callback.answer("В покупки")
         return
     await callback.answer(f"В покупки: {name}")
+    if not remaining:
+        await state.clear()
+    in_stock = await catalog.stock_ingredient_ids()
+    await _show_need_checklist(
+        callback.message, dish, remaining, in_stock=in_stock, edit=True
+    )
+
+
+@router.callback_query(F.data.startswith("needk:"), StateFilter(NeedCheck.active))
+async def on_need_keep(
+    callback: CallbackQuery, catalog: CatalogService, state: FSMContext
+) -> None:
+    """Still have in pantry — just remove from checklist."""
+    try:
+        idx = int((callback.data or "").split(":")[1])
+    except (IndexError, ValueError):
+        await callback.answer()
+        return
+    data = await state.get_data()
+    remaining: list = list(data.get("need_items") or [])
+    dish_id = data.get("need_dish_id")
+    if idx < 0 or idx >= len(remaining) or not dish_id:
+        await callback.answer("Устарело", show_alert=True)
+        return
+    remaining.pop(idx)
+    await state.update_data(need_items=remaining)
+    dish = await catalog.get_dish(dish_id)
+    if not dish or not isinstance(callback.message, Message):
+        await callback.answer("Ещё есть")
+        return
+    await callback.answer("Ещё есть")
+    if not remaining:
+        await state.clear()
+    in_stock = await catalog.stock_ingredient_ids()
+    await _show_need_checklist(
+        callback.message, dish, remaining, in_stock=in_stock, edit=True
+    )
+
+
+@router.callback_query(F.data.startswith("needo:"), StateFilter(NeedCheck.active))
+async def on_need_out(
+    callback: CallbackQuery, catalog: CatalogService, state: FSMContext
+) -> None:
+    """Ran out: remove from stock, add to shopping."""
+    try:
+        idx = int((callback.data or "").split(":")[1])
+    except (IndexError, ValueError):
+        await callback.answer()
+        return
+    data = await state.get_data()
+    remaining: list = list(data.get("need_items") or [])
+    dish_id = data.get("need_dish_id")
+    if idx < 0 or idx >= len(remaining) or not dish_id:
+        await callback.answer("Устарело", show_alert=True)
+        return
+    ing_id, label = remaining.pop(idx)
+    name = label.split(" (", 1)[0]
+    category = None
+    dish = await catalog.get_dish(dish_id)
+    if dish:
+        version = _pick_version(dish)
+        for link in (version.ingredients if version else []) or []:
+            if link.ingredient_id == ing_id and link.ingredient:
+                name = link.ingredient.name
+                category = link.ingredient.category
+                break
+    await catalog.remove_stock_by_ingredient(ing_id)
+    await catalog.add_shopping_by_name(
+        name, category=category, ingredient_id=ing_id
+    )
+    await state.update_data(need_items=remaining)
+    if not dish or not isinstance(callback.message, Message):
+        await callback.answer("Кончилось → покупки")
+        return
+    await callback.answer(f"Кончилось: {name}")
     if not remaining:
         await state.clear()
     in_stock = await catalog.stock_ingredient_ids()
@@ -985,6 +1101,8 @@ async def on_need_done(
 
 @router.callback_query(F.data.startswith("needh:"))
 @router.callback_query(F.data.startswith("needb:"))
+@router.callback_query(F.data.startswith("needk:"))
+@router.callback_query(F.data.startswith("needo:"))
 async def on_need_stale(callback: CallbackQuery) -> None:
     await callback.answer("Сначала нажмите «Проверить состав»", show_alert=True)
 
@@ -1010,11 +1128,11 @@ async def on_shopping_ok(
     callback: CallbackQuery, catalog: CatalogService, state: FSMContext
 ) -> None:
     item_id = (callback.data or "")[7:]
-    ok = await catalog.mark_shopping_bought(item_id)
+    ok = await catalog.mark_shopping_bought(item_id, to_stock=True)
     if not ok:
         await callback.answer("Уже нет", show_alert=True)
         return
-    await callback.answer("Куплено")
+    await callback.answer("Куплено → кладовая")
     if isinstance(callback.message, Message):
         await _send_catalog_list(
             callback.message, catalog, "shop", edit=True, state=state
@@ -1040,6 +1158,8 @@ async def on_shopping_rm(
 @router.callback_query(F.data.startswith("deliv:"))
 async def on_delivery(callback: CallbackQuery, catalog: CatalogService) -> None:
     item_id = (callback.data or "")[6:]
+    if item_id.startswith("del:"):
+        return
     item = await catalog.get_delivery(item_id)
     if not item or not isinstance(callback.message, Message):
         await callback.answer("Не найдено", show_alert=True)
@@ -1048,15 +1168,80 @@ async def on_delivery(callback: CallbackQuery, catalog: CatalogService) -> None:
     await _edit_or_answer(
         callback.message,
         _format_delivery(item),
-        markup=back_to_list_keyboard("deliv"),
+        markup=delivery_card_keyboard(item.id),
         edit=True,
+    )
+
+
+@router.callback_query(F.data.startswith("delivdel:"))
+async def on_delivery_delete_ask(callback: CallbackQuery) -> None:
+    item_id = (callback.data or "")[9:]
+    if not isinstance(callback.message, Message):
+        await callback.answer()
+        return
+    await callback.answer()
+    await callback.message.edit_reply_markup(
+        reply_markup=confirm_keyboard(f"delivok:{item_id}", f"deliv:{item_id}")
+    )
+
+
+@router.callback_query(F.data.startswith("delivok:"))
+async def on_delivery_delete_ok(
+    callback: CallbackQuery, catalog: CatalogService, state: FSMContext
+) -> None:
+    item_id = (callback.data or "")[8:]
+    ok = await catalog.delete_delivery(item_id)
+    await callback.answer("Удалено" if ok else "Уже нет")
+    if isinstance(callback.message, Message):
+        await _send_catalog_list(
+            callback.message, catalog, "deliv", edit=True, state=state
+        )
+
+
+@router.callback_query(F.data.startswith("dishdel:"))
+async def on_dish_delete_ask(callback: CallbackQuery) -> None:
+    dish_id = (callback.data or "")[8:]
+    if not isinstance(callback.message, Message):
+        await callback.answer()
+        return
+    await callback.answer()
+    await callback.message.edit_reply_markup(
+        reply_markup=confirm_keyboard(f"dishok:{dish_id}", f"dish:{dish_id}")
+    )
+
+
+@router.callback_query(F.data.startswith("dishok:"))
+async def on_dish_delete_ok(
+    callback: CallbackQuery, catalog: CatalogService, state: FSMContext
+) -> None:
+    dish_id = (callback.data or "")[7:]
+    dish = await catalog.get_dish(dish_id)
+    kind = "prep" if dish and (dish.category or "") == PREP_CATEGORY else "dish"
+    ok = await catalog.delete_dish(dish_id)
+    await callback.answer("Удалено" if ok else "Уже нет")
+    if isinstance(callback.message, Message):
+        await _send_catalog_list(
+            callback.message, catalog, kind, edit=True, state=state
+        )
+
+
+@router.callback_query(F.data.startswith("cook:"))
+async def on_cook_deduct(
+    callback: CallbackQuery, catalog: CatalogService
+) -> None:
+    dish_id = (callback.data or "")[5:]
+    stats = await catalog.deduct_dish_from_stock(dish_id)
+    await callback.answer(
+        f"Списано: {stats.get('deducted', 0)}, кончилось: {stats.get('depleted', 0)}, "
+        f"не было: {stats.get('missing', 0)}",
+        show_alert=True,
     )
 
 
 @router.callback_query(F.data.startswith("stock:"))
 async def on_stock(callback: CallbackQuery, catalog: CatalogService) -> None:
     item_id = (callback.data or "")[6:]
-    if item_id.startswith("rm:"):
+    if item_id.startswith("rm:") or item_id.startswith("op:"):
         return
     item = await catalog.get_stock(item_id)
     if not item or not isinstance(callback.message, Message):
@@ -1066,9 +1251,31 @@ async def on_stock(callback: CallbackQuery, catalog: CatalogService) -> None:
     await _edit_or_answer(
         callback.message,
         _format_stock(item),
-        markup=stock_card_keyboard(item.id),
+        markup=stock_card_keyboard(item.id, is_opened=bool(item.is_opened)),
         edit=True,
     )
+
+
+@router.callback_query(F.data.startswith("stockop:"))
+async def on_stock_opened(
+    callback: CallbackQuery, catalog: CatalogService
+) -> None:
+    item_id = (callback.data or "")[8:]
+    item = await catalog.get_stock(item_id)
+    if not item or not isinstance(callback.message, Message):
+        await callback.answer("Не найдено", show_alert=True)
+        return
+    new_val = not bool(item.is_opened)
+    await catalog.set_stock_opened(item_id, new_val)
+    item = await catalog.get_stock(item_id)
+    await callback.answer("Открыто" if new_val else "Закрыто")
+    if item:
+        await _edit_or_answer(
+            callback.message,
+            _format_stock(item),
+            markup=stock_card_keyboard(item.id, is_opened=bool(item.is_opened)),
+            edit=True,
+        )
 
 
 @router.callback_query(F.data.startswith("stockrm:"))
@@ -1156,6 +1363,20 @@ async def on_document(message: Message, import_engine: ImportEngine, bot) -> Non
 @router.message(IsJsonPayload())
 async def on_text_json(message: Message, import_engine: ImportEngine) -> None:
     await _apply_json_text(message, message.text or "", import_engine)
+
+
+@router.message(F.voice | F.audio)
+async def on_voice(message: Message) -> None:
+    """No built-in STT: point to agent → JSON loop (avoids fake transcription)."""
+    await message.answer(
+        "<b>Голос</b>\n\n"
+        "Бот принимает готовый JSON, а не расшифровку речи.\n"
+        "1. /rules — скачайте правила агента\n"
+        "2. Надиктуйте агенту (DeepSeek и т.п.)\n"
+        "3. Пришлите сюда JSON текстом или файлом\n\n"
+        "Так надёжнее, чем тащить Whisper в бота без отдельного ключа.",
+        reply_markup=main_keyboard(),
+    )
 
 
 @router.message(IsUnknownText())

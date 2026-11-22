@@ -19,47 +19,40 @@ def _to_async_url(database_path: str | Path) -> str:
     return f"sqlite+aiosqlite:///{path.as_posix()}"
 
 
-def _ensure_sqlite_columns(connection) -> None:
-    rows = connection.execute(text("PRAGMA table_info(dishes)")).fetchall()
-    if not rows:
-        return
-    columns = {row[1] for row in rows}
-    if "current_version_id" not in columns:
-        connection.execute(text("ALTER TABLE dishes ADD COLUMN current_version_id VARCHAR(36)"))
+def _table_exists(connection, name: str) -> bool:
+    row = connection.execute(
+        text("SELECT 1 FROM sqlite_master WHERE type='table' AND name=:n"),
+        {"n": name},
+    ).fetchone()
+    return row is not None
+
+
+def _columns(connection, table: str) -> set[str]:
+    if not _table_exists(connection, table):
+        return set()
+    return {row[1] for row in connection.execute(text(f"PRAGMA table_info({table})")).fetchall()}
 
 
 def _dedupe_name_column(connection, table: str) -> None:
-    """Keep oldest row per name; rename duplicates to 'Name (2)' …"""
+    if not _table_exists(connection, table):
+        return
     dupes = connection.execute(
-        text(
-            f"""
-            SELECT name FROM {table}
-            GROUP BY name
-            HAVING COUNT(*) > 1
-            """
-        )
+        text(f"SELECT name FROM {table} GROUP BY name HAVING COUNT(*) > 1")
     ).fetchall()
     for (name,) in dupes:
         rows = connection.execute(
             text(
-                f"""
-                SELECT id FROM {table}
-                WHERE name = :name
-                ORDER BY created_at ASC, id ASC
-                """
+                f"SELECT id FROM {table} WHERE name = :name ORDER BY created_at ASC, id ASC"
             ),
             {"name": name},
         ).fetchall()
         for i, (row_id,) in enumerate(rows[1:], start=2):
             new_name = f"{name} ({i})"
             n = i
-            while True:
-                exists = connection.execute(
-                    text(f"SELECT 1 FROM {table} WHERE name = :n LIMIT 1"),
-                    {"n": new_name},
-                ).fetchone()
-                if not exists:
-                    break
+            while connection.execute(
+                text(f"SELECT 1 FROM {table} WHERE name = :n LIMIT 1"),
+                {"n": new_name},
+            ).fetchone():
                 n += 1
                 new_name = f"{name} ({n})"
             connection.execute(
@@ -68,60 +61,36 @@ def _dedupe_name_column(connection, table: str) -> None:
             )
 
 
-def _has_unique_name_index(connection, table: str) -> bool:
+def _ensure_unique_name(connection, table: str, index_name: str) -> None:
+    if not _table_exists(connection, table):
+        return
     indexes = connection.execute(text(f"PRAGMA index_list({table})")).fetchall()
     for idx in indexes:
-        if not idx[2] or not idx[1]:
-            continue
-        info = connection.execute(text(f"PRAGMA index_info('{idx[1]}')")).fetchall()
-        cols = {row[2] for row in info}
-        if cols == {"name"}:
-            return True
-    return False
-
-
-def _ensure_dish_name_unique(connection) -> None:
-    rows = connection.execute(text("PRAGMA table_info(dishes)")).fetchall()
-    if not rows:
-        return
-    if _has_unique_name_index(connection, "dishes"):
-        return
-    _dedupe_name_column(connection, "dishes")
-    connection.execute(
-        text("CREATE UNIQUE INDEX IF NOT EXISTS uq_dishes_name ON dishes(name)")
-    )
-
-
-def _ensure_delivery_name_unique(connection) -> None:
-    rows = connection.execute(text("PRAGMA table_info(deliveries)")).fetchall()
-    if not rows:
-        return
-    if _has_unique_name_index(connection, "deliveries"):
-        return
-    _dedupe_name_column(connection, "deliveries")
-    connection.execute(
-        text("CREATE UNIQUE INDEX IF NOT EXISTS uq_deliveries_name ON deliveries(name)")
-    )
+        if idx[2] and idx[1]:
+            info = connection.execute(text(f"PRAGMA index_info('{idx[1]}')")).fetchall()
+            if {row[2] for row in info} == {"name"}:
+                return
+    _dedupe_name_column(connection, table)
+    connection.execute(text(f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} ON {table}(name)"))
 
 
 def _migrate_legacy_dish_ingredients_to_versions(connection) -> None:
-    """One-shot: dishes with composition mirror but no versions → create a version."""
+    if not _table_exists(connection, "dish_ingredients"):
+        return
+    if not _table_exists(connection, "dish_versions"):
+        return
+    import uuid
+
     dishes = connection.execute(
         text(
             """
             SELECT d.id FROM dishes d
-            WHERE EXISTS (
-                SELECT 1 FROM dish_ingredients di WHERE di.dish_id = d.id
-            )
-            AND NOT EXISTS (
-                SELECT 1 FROM dish_versions dv WHERE dv.dish_id = d.id
-            )
+            WHERE EXISTS (SELECT 1 FROM dish_ingredients di WHERE di.dish_id = d.id)
+              AND NOT EXISTS (SELECT 1 FROM dish_versions dv WHERE dv.dish_id = d.id)
             """
         )
     ).fetchall()
     for (dish_id,) in dishes:
-        import uuid
-
         version_id = str(uuid.uuid4())
         connection.execute(
             text(
@@ -140,16 +109,12 @@ def _migrate_legacy_dish_ingredients_to_versions(connection) -> None:
             ),
             {"vid": version_id, "did": dish_id},
         )
-        lines = connection.execute(
+        for ingredient_id, amount, unit, note in connection.execute(
             text(
-                """
-                SELECT ingredient_id, amount, unit, note
-                FROM dish_ingredients WHERE dish_id = :did
-                """
+                "SELECT ingredient_id, amount, unit, note FROM dish_ingredients WHERE dish_id = :did"
             ),
             {"did": dish_id},
-        ).fetchall()
-        for ingredient_id, amount, unit, note in lines:
+        ).fetchall():
             connection.execute(
                 text(
                     """
@@ -173,15 +138,76 @@ def _migrate_legacy_dish_ingredients_to_versions(connection) -> None:
         )
 
 
+def _drop_dish_ingredients(connection) -> None:
+    if _table_exists(connection, "dish_ingredients"):
+        connection.execute(text("DROP TABLE dish_ingredients"))
+
+
+def _ensure_extra_columns(connection) -> None:
+    dish_cols = _columns(connection, "dishes")
+    if dish_cols and "current_version_id" not in dish_cols:
+        connection.execute(text("ALTER TABLE dishes ADD COLUMN current_version_id VARCHAR(36)"))
+
+    shop_cols = _columns(connection, "shopping_items")
+    if shop_cols and "ingredient_id" not in shop_cols:
+        connection.execute(
+            text("ALTER TABLE shopping_items ADD COLUMN ingredient_id VARCHAR(36)")
+        )
+
+    stock_cols = _columns(connection, "stock_items")
+    if stock_cols:
+        if "is_opened" not in stock_cols:
+            connection.execute(
+                text("ALTER TABLE stock_items ADD COLUMN is_opened BOOLEAN DEFAULT 0")
+            )
+        if "expires_on" not in stock_cols:
+            connection.execute(text("ALTER TABLE stock_items ADD COLUMN expires_on DATE"))
+
+
+def _run_schema_upgrades(connection) -> None:
+    """Lightweight migration path (Alembic-compatible stamped revisions in schema_meta)."""
+    connection.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS schema_meta (
+                version VARCHAR(64) PRIMARY KEY,
+                applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )
+    applied = {
+        row[0]
+        for row in connection.execute(text("SELECT version FROM schema_meta")).fetchall()
+    }
+
+    steps = [
+        ("2026_11_22_unique_names", lambda c: (
+            _ensure_unique_name(c, "dishes", "uq_dishes_name"),
+            _ensure_unique_name(c, "deliveries", "uq_deliveries_name"),
+        )),
+        ("2026_11_22_versions_only", lambda c: (
+            _migrate_legacy_dish_ingredients_to_versions(c),
+            _drop_dish_ingredients(c),
+        )),
+        ("2026_11_22_stock_shopping_cols", lambda c: _ensure_extra_columns(c)),
+    ]
+    for version, fn in steps:
+        if version in applied:
+            continue
+        fn(connection)
+        connection.execute(
+            text("INSERT INTO schema_meta(version) VALUES (:v)"),
+            {"v": version},
+        )
+
+
 async def init_db(database_path: str) -> async_sessionmaker[AsyncSession]:
     global _session_factory
     engine = create_async_engine(_to_async_url(database_path), echo=False)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        await conn.run_sync(_ensure_sqlite_columns)
-        await conn.run_sync(_ensure_dish_name_unique)
-        await conn.run_sync(_ensure_delivery_name_unique)
-        await conn.run_sync(_migrate_legacy_dish_ingredients_to_versions)
+        await conn.run_sync(_run_schema_upgrades)
     _session_factory = async_sessionmaker(engine, expire_on_commit=False)
     return _session_factory
 

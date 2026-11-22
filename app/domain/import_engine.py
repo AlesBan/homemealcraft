@@ -40,7 +40,11 @@ from app.domain.schemas import (
     StockUpsert,
 )
 from app.domain.taxonomy import (
+    DELIVERY_CATEGORY_SET,
+    DISH_CATEGORY_SET,
+    INGREDIENT_CATEGORY_SET,
     canonical_type_name,
+    coerce_category,
     normalize_entity_name,
     normalize_type_name,
     suggest_category,
@@ -137,6 +141,13 @@ class ImportReport:
             lines.append("Обновлено: " + ", ".join(f"{k} ×{v}" for k, v in updated.items()))
         if other:
             lines.append("Ещё: " + ", ".join(f"{k} ×{v}" for k, v in other.items()))
+        ids = [r.id for r in self.results if r.id and r.status in {"created", "updated"}]
+        if ids:
+            # Keep Telegram message short: first few ids for agent follow-ups
+            shown = ids[:8]
+            lines.append("id: " + ", ".join(f"<code>{i}</code>" for i in shown))
+            if len(ids) > 8:
+                lines.append(f"…и ещё {len(ids) - 8}")
         return "\n".join(lines)
 
 
@@ -272,7 +283,7 @@ class ImportEngine:
 
         payload = {
             "name": name,
-            "category": action.category,
+            "category": coerce_category(action.category, INGREDIENT_CATEGORY_SET),
             "kcal": action.kcal,
             "protein_g": action.protein_g,
             "fat_g": action.fat_g,
@@ -390,7 +401,7 @@ class ImportEngine:
 
         payload = {
             "name": dish_name,
-            "category": action.category,
+            "category": coerce_category(action.category, DISH_CATEGORY_SET),
             "description": action.description,
             "cook_time_min": action.cook_time_min,
             "servings": action.servings,
@@ -629,7 +640,7 @@ class ImportEngine:
 
         payload = {
             "name": name,
-            "category": action.category,
+            "category": coerce_category(action.category, DELIVERY_CATEGORY_SET),
             "url": action.url.strip() if action.url else None,
             "description": action.description,
             "comments": action.comments,
@@ -709,11 +720,22 @@ class ImportEngine:
             name=display_name if not ingredient else None,
         )
 
+        expires = None
+        if action.expires_on:
+            from datetime import date as date_cls
+
+            try:
+                expires = date_cls.fromisoformat(action.expires_on.strip())
+            except ValueError as exc:
+                raise ValueError("expires_on must be YYYY-MM-DD") from exc
+
         payload = {
             "name": display_name,
             "ingredient_id": ingredient.id if ingredient else None,
             "amount": action.amount,
             "unit": action.unit,
+            "is_opened": action.is_opened,
+            "expires_on": expires,
             "comments": action.comments,
         }
 
@@ -721,7 +743,8 @@ class ImportEngine:
             entity = StockItem(id=action.id or _new_id(), name=display_name)
             session.add(entity)
             for key, value in payload.items():
-                setattr(entity, key, value)
+                if value is not None or key in {"name", "ingredient_id"}:
+                    setattr(entity, key, value)
             await session.flush()
             return ActionResult(op=action.op, status="created", id=entity.id)
 
@@ -748,6 +771,7 @@ class ImportEngine:
         name = action.name
         category = action.category
         product_id = action.product_id
+        ingredient_id = action.ingredient_id
         if product_id:
             product = await session.get(Product, product_id)
             if product is None:
@@ -755,10 +779,26 @@ class ImportEngine:
             if not name:
                 brand = f" {product.brand}" if product.brand else ""
                 name = f"{product.name}{brand}".strip()
+            if not ingredient_id:
+                ingredient_id = product.ingredient_id
+        if action.ingredient_name or ingredient_id:
+            ing = await self._resolve_ingredient(
+                session,
+                ingredient_id=ingredient_id,
+                ingredient_name=action.ingredient_name,
+                create_if_missing=bool(action.ingredient_name),
+            )
+            if ing:
+                ingredient_id = ing.id
+                if not name:
+                    name = ing.name
+                if not category:
+                    category = ing.category
         assert name is not None
         item = ShoppingItem(
             id=_new_id(),
             product_id=product_id,
+            ingredient_id=ingredient_id,
             name=normalize_entity_name(name),
             category=category,
             is_bought=False,

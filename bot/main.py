@@ -7,12 +7,11 @@ from pathlib import Path
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.fsm.storage.memory import MemoryStorage
-
 from app.db.session import init_db
 from app.domain.catalog import CatalogService
 from app.domain.import_engine import ImportEngine
 from bot.config import get_settings
+from bot.fsm_storage import JsonFileStorage
 from bot.handlers import router
 from bot.keyboards import BOT_COMMANDS
 from bot.logging_setup import setup_logging
@@ -46,7 +45,8 @@ async def main() -> None:
         token=settings.telegram_bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
-    dp = Dispatcher(storage=MemoryStorage())
+    fsm_path = Path(settings.database_path).resolve().parent / "fsm_state.json"
+    dp = Dispatcher(storage=JsonFileStorage(fsm_path))
 
     # Order: errors outer → access → filter → access log → handler
     dp.message.middleware(ErrorMiddleware())

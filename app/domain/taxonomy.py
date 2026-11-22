@@ -147,6 +147,34 @@ def normalize_entity_name(name: str) -> str:
     return normalize_type_name(name)
 
 
+INGREDIENT_CATEGORY_SET = set(INGREDIENT_CATEGORIES)
+
+DISH_CATEGORIES: tuple[str, ...] = (
+    "breakfast",
+    "soup",
+    "main",
+    "side",
+    "salad",
+    "bakery",
+    "dessert",
+    "quick",
+    "prep",
+)
+DISH_CATEGORY_SET = set(DISH_CATEGORIES)
+
+DELIVERY_CATEGORIES: tuple[str, ...] = ("food", "grocery", "pharmacy", "other")
+DELIVERY_CATEGORY_SET = set(DELIVERY_CATEGORIES)
+
+
+def coerce_category(value: str | None, allowed: set[str], default: str = "other") -> str | None:
+    if value is None:
+        return None
+    key = value.strip().lower()
+    if key in allowed:
+        return key
+    return default
+
+
 def suggest_category(type_name: str) -> str:
     key = normalize_type_name(type_name)
     if key in TYPE_TO_CATEGORY:

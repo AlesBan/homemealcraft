@@ -69,7 +69,6 @@ def catalog_list_keyboard(
     pages: int = 1,
     query: str | None = None,
 ) -> InlineKeyboardMarkup:
-    """kind: ing | prod | dish | prep | deliv | stock | shop; items: (id, label)."""
     rows: list[list[InlineKeyboardButton]] = []
     for item_id, label in items:
         rows.append(
@@ -83,20 +82,11 @@ def catalog_list_keyboard(
 
     nav: list[InlineKeyboardButton] = []
     if page > 0:
-        nav.append(
-            InlineKeyboardButton(text="←", callback_data=f"page:{kind}:{page - 1}")
-        )
+        nav.append(InlineKeyboardButton(text="←", callback_data=f"page:{kind}:{page - 1}"))
     if pages > 1:
-        nav.append(
-            InlineKeyboardButton(
-                text=f"{page + 1}/{pages}",
-                callback_data="noop",
-            )
-        )
+        nav.append(InlineKeyboardButton(text=f"{page + 1}/{pages}", callback_data="noop"))
     if page + 1 < pages:
-        nav.append(
-            InlineKeyboardButton(text="→", callback_data=f"page:{kind}:{page + 1}")
-        )
+        nav.append(InlineKeyboardButton(text="→", callback_data=f"page:{kind}:{page + 1}"))
     if nav:
         rows.append(nav)
 
@@ -128,6 +118,17 @@ def back_to_list_keyboard(kind: str) -> InlineKeyboardMarkup:
     )
 
 
+def confirm_keyboard(yes_data: str, no_data: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Да", callback_data=yes_data),
+                InlineKeyboardButton(text="Отмена", callback_data=no_data),
+            ]
+        ]
+    )
+
+
 def dish_card_keyboard(
     dish_id: str,
     versions: list[tuple[str, str]],
@@ -145,6 +146,14 @@ def dish_card_keyboard(
             InlineKeyboardButton(
                 text="Проверить состав",
                 callback_data=f"need:{dish_id}",
+            )
+        ]
+    )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="Списать состав из кладовой",
+                callback_data=f"cook:{dish_id}",
             )
         ]
     )
@@ -174,6 +183,14 @@ def dish_card_keyboard(
     rows.append(
         [
             InlineKeyboardButton(
+                text="🗑 Удалить блюдо",
+                callback_data=f"dishdel:{dish_id}",
+            )
+        ]
+    )
+    rows.append(
+        [
+            InlineKeyboardButton(
                 text=back_labels.get(list_kind, "← Назад"),
                 callback_data=f"list:{list_kind}",
             )
@@ -183,41 +200,42 @@ def dish_card_keyboard(
 
 
 def confirm_delete_version_keyboard(version_id: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="Да, удалить",
-                    callback_data=f"verdok:{version_id}",
-                ),
-                InlineKeyboardButton(
-                    text="Отмена",
-                    callback_data=f"ver:{version_id}",
-                ),
-            ]
-        ]
-    )
+    return confirm_keyboard(f"verdok:{version_id}", f"ver:{version_id}")
 
 
 def need_checklist_keyboard(
     dish_id: str,
-    items: list[tuple[str, str]],
+    items: list[tuple[str, str, bool]],
 ) -> InlineKeyboardMarkup:
-    """items: (ingredient_id, label). Indices in callbacks; ids live in FSM."""
+    """items: (ingredient_id, label, in_stock)."""
     rows: list[list[InlineKeyboardButton]] = []
-    for idx, (_ing_id, label) in enumerate(items):
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=_clip(f"✓ Есть · {label}", 40),
-                    callback_data=f"needh:{idx}",
-                ),
-                InlineKeyboardButton(
-                    text="В покупки",
-                    callback_data=f"needb:{idx}",
-                ),
-            ]
-        )
+    for idx, (_ing_id, label, in_stock) in enumerate(items):
+        if in_stock:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=_clip(f"Ещё есть · {label}", 40),
+                        callback_data=f"needk:{idx}",
+                    ),
+                    InlineKeyboardButton(
+                        text="Кончилось",
+                        callback_data=f"needo:{idx}",
+                    ),
+                ]
+            )
+        else:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=_clip(f"✓ Есть · {label}", 40),
+                        callback_data=f"needh:{idx}",
+                    ),
+                    InlineKeyboardButton(
+                        text="В покупки",
+                        callback_data=f"needb:{idx}",
+                    ),
+                ]
+            )
     rows.append(
         [
             InlineKeyboardButton(
@@ -234,7 +252,7 @@ def shopping_card_keyboard(item_id: str) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="✓ Куплено",
+                    text="✓ Куплено → кладовая",
                     callback_data=f"shopok:{item_id}",
                 ),
                 InlineKeyboardButton(
@@ -247,9 +265,16 @@ def shopping_card_keyboard(item_id: str) -> InlineKeyboardMarkup:
     )
 
 
-def stock_card_keyboard(item_id: str) -> InlineKeyboardMarkup:
+def stock_card_keyboard(item_id: str, *, is_opened: bool = False) -> InlineKeyboardMarkup:
+    opened_label = "Открыто: да → нет" if is_opened else "Открыто: нет → да"
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=opened_label,
+                    callback_data=f"stockop:{item_id}",
+                )
+            ],
             [
                 InlineKeyboardButton(
                     text="🗑 Убрать из кладовой",
@@ -257,5 +282,33 @@ def stock_card_keyboard(item_id: str) -> InlineKeyboardMarkup:
                 )
             ],
             [InlineKeyboardButton(text="← К кладовой", callback_data="list:stock")],
+        ]
+    )
+
+
+def product_card_keyboard(item_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🗑 Удалить продукт",
+                    callback_data=f"proddel:{item_id}",
+                )
+            ],
+            [InlineKeyboardButton(text="← К продуктам", callback_data="list:prod")],
+        ]
+    )
+
+
+def delivery_card_keyboard(item_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🗑 Удалить доставку",
+                    callback_data=f"delivdel:{item_id}",
+                )
+            ],
+            [InlineKeyboardButton(text="← К доставкам", callback_data="list:deliv")],
         ]
     )

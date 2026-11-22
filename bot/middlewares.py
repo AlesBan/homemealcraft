@@ -94,12 +94,14 @@ class MessageFilterMiddleware(BaseMiddleware):
             await event.answer("Нужен файл <code>.json</code> или текст JSON.")
             return None
 
-        # Stickers, voice, photos, video, etc. — ignore quietly
+        # Voice/audio — let handler explain agent flow (optional Whisper later)
+        if event.voice or event.audio:
+            return await handler(event, data)
+
+        # Stickers, photos, video, etc. — ignore quietly
         kind = "media"
         if event.sticker:
             kind = "sticker"
-        elif event.voice or event.audio:
-            kind = "audio"
         elif event.photo:
             kind = "photo"
         elif event.video:
