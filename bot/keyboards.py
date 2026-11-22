@@ -35,7 +35,7 @@ BTN_HELP = "❓ JSON"
 def main_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=BTN_HOME), KeyboardButton(text=BTN_HELP)],
+            [KeyboardButton(text=BTN_SHOPPING)],
             [
                 KeyboardButton(text=BTN_INGREDIENTS),
                 KeyboardButton(text=BTN_PRODUCTS),
@@ -48,7 +48,6 @@ def main_keyboard() -> ReplyKeyboardMarkup:
                 KeyboardButton(text=BTN_DELIVERIES),
                 KeyboardButton(text=BTN_STOCK),
             ],
-            [KeyboardButton(text=BTN_SHOPPING)],
         ],
         resize_keyboard=True,
     )

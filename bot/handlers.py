@@ -345,7 +345,12 @@ def _product_button_label(item: Product) -> str:
 
 
 async def _edit_or_answer(
-    target: Message, text: str, *, markup=None, edit: bool = False
+    target: Message,
+    text: str,
+    *,
+    markup=None,
+    edit: bool = False,
+    refresh_keyboard: bool = False,
 ) -> None:
     if edit:
         try:
@@ -353,6 +358,16 @@ async def _edit_or_answer(
             return
         except Exception:  # noqa: BLE001
             pass
+    if refresh_keyboard:
+        # Reply keyboard and inline buttons cannot share one markup.
+        # Send the new reply keyboard, then attach the inline list.
+        sent = await target.answer(text, reply_markup=main_keyboard())
+        if markup is not None:
+            try:
+                await sent.edit_reply_markup(reply_markup=markup)
+            except Exception:  # noqa: BLE001
+                log.debug("inline markup after keyboard refresh failed", exc_info=True)
+        return
     await target.answer(text, reply_markup=markup)
 
 
@@ -477,9 +492,13 @@ async def _send_catalog_list(
         text = _empty_list_text(kind, q)
         markup = catalog_list_keyboard(kind, [], page=0, pages=1, query=q)
         if q:
-            await _edit_or_answer(target, text, markup=markup, edit=edit)
+            await _edit_or_answer(
+                target, text, markup=markup, edit=edit, refresh_keyboard=not edit
+            )
         else:
-            await _edit_or_answer(target, text, edit=edit)
+            await _edit_or_answer(
+                target, text, edit=edit, refresh_keyboard=not edit
+            )
         return
 
     subtitle = {
@@ -498,7 +517,9 @@ async def _send_catalog_list(
         pages=result.pages,
         query=result.query,
     )
-    await _edit_or_answer(target, text, markup=markup, edit=edit)
+    await _edit_or_answer(
+        target, text, markup=markup, edit=edit, refresh_keyboard=not edit
+    )
 
 
 async def _show_need_checklist(
@@ -575,7 +596,8 @@ async def cmd_help(message: Message, state: FSMContext) -> None:
         "2. Вставьте их в system prompt агента\n"
         "3. Надиктуйте блюдо/заготовку/продукт/доставку → JSON боту\n\n"
         "То же имя блюда + состав = новая версия. "
-        "У блюда «Проверить состав»: Есть → кладовая, В покупки → список. БЖУ на 100 г."
+        "У блюда «Проверить состав»: Есть → кладовая, В покупки → список. БЖУ на 100 г.",
+        reply_markup=main_keyboard(),
     )
 
 
