@@ -73,7 +73,7 @@ class Dish(Base):
     __tablename__ = "dishes"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     category: Mapped[str | None] = mapped_column(String(64), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     cook_time_min: Mapped[int | None] = mapped_column(Integer, nullable=True)

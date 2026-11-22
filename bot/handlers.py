@@ -2,18 +2,18 @@ from __future__ import annotations
 
 import json
 import logging
-
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandStart, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 from pydantic import ValidationError
 
-from zoneinfo import ZoneInfo
-
 from app.db.models import Delivery, Dish, DishVersion, Ingredient, Product, ShoppingItem
-from app.domain.catalog import CatalogService
+from app.domain.catalog import PAGE_SIZE, CatalogService, PageResult
 from app.domain.import_engine import ImportEngine
 from app.domain.json_extract import extract_json_object
 from app.domain.schemas import ImportPacket
@@ -29,8 +29,11 @@ from bot.keyboards import (
     BTN_SHOPPING,
     back_to_list_keyboard,
     catalog_list_keyboard,
+    confirm_delete_version_keyboard,
     dish_card_keyboard,
     main_keyboard,
+    need_checklist_keyboard,
+    shopping_card_keyboard,
 )
 
 PREP_CATEGORY = "prep"
@@ -57,6 +60,43 @@ DELIVERY_CATEGORY_RU = {
     "other": "Прочее",
 }
 
+INGREDIENT_CATEGORY_RU = {
+    "dairy": "Молочка",
+    "meat": "Мясо",
+    "fish": "Рыба",
+    "eggs": "Яйца",
+    "vegetables": "Овощи",
+    "fruit": "Фрукты",
+    "grocery": "Бакалея",
+    "bakery": "Хлеб",
+    "frozen": "Заморозка",
+    "drinks": "Напитки",
+    "sauce": "Соусы",
+    "spice": "Специи",
+    "oil": "Масла",
+    "sweet": "Сладкое",
+    "snack": "Перекус",
+    "household": "Бытовое",
+    "other": "Прочее",
+}
+
+LIST_TITLES = {
+    "ing": "Ингредиенты",
+    "prod": "Продукты",
+    "dish": "Блюда",
+    "prep": "Заготовки",
+    "deliv": "Доставки",
+    "shop": "Покупки",
+}
+
+
+class CatalogSearch(StatesGroup):
+    waiting_query = State()
+
+
+class NeedCheck(StatesGroup):
+    active = State()
+
 
 def _nutrition_line(kcal, protein, fat, carbs) -> str:
     if all(v is None for v in (kcal, protein, fat, carbs)):
@@ -69,10 +109,17 @@ def _nutrition_line(kcal, protein, fat, carbs) -> str:
     )
 
 
+def _shelf_ru(code: str | None) -> str | None:
+    if not code:
+        return None
+    return INGREDIENT_CATEGORY_RU.get(code, code)
+
+
 def _format_ingredient(item: Ingredient) -> str:
     lines = [f"<b>{item.name}</b>"]
-    if item.category:
-        lines.append(f"Категория: {item.category}")
+    shelf = _shelf_ru(item.category)
+    if shelf:
+        lines.append(f"Полка: {shelf}")
     lines.append(_nutrition_line(item.kcal, item.protein_g, item.fat_g, item.carbs_g))
     if item.comments:
         lines.append(f"Комментарий: {item.comments}")
@@ -86,8 +133,9 @@ def _format_product(item: Product) -> str:
     lines = [f"<b>{title}</b>"]
     if item.ingredient:
         lines.append(f"Вид: {item.ingredient.name}")
-        if item.ingredient.category:
-            lines.append(f"Полка: {item.ingredient.category}")
+        shelf = _shelf_ru(item.ingredient.category)
+        if shelf:
+            lines.append(f"Полка: {shelf}")
     if item.barcode:
         lines.append(f"Штрихкод: {item.barcode}")
     if item.fat_percent is not None:
@@ -98,46 +146,41 @@ def _format_product(item: Product) -> str:
         lines.append(f"Фасовка: {item.unit_label}")
     if item.manufacturer:
         lines.append(f"Производитель: {item.manufacturer}")
-    lines.append(_nutrition_line(item.kcal, item.protein_g, item.fat_g, item.carbs_g))
     if item.composition:
+        lines.append("")
         lines.append(f"Состав: {item.composition}")
+    lines.append(_nutrition_line(item.kcal, item.protein_g, item.fat_g, item.carbs_g))
     if item.comments:
         lines.append(f"Комментарий: {item.comments}")
     return "\n".join(lines)
 
 
-def _fmt_dt(value) -> str:
-    if value is None:
-        return ""
-    try:
-        dt = value
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=ZoneInfo("UTC"))
-        local = dt.astimezone(ZoneInfo("Europe/Minsk"))
-        return local.strftime("%d.%m.%Y %H:%M")
-    except Exception:  # noqa: BLE001
-        return str(value)[:16]
-
-
 def _ingredient_lines(links) -> list[str]:
-    lines: list[str] = []
     if not links:
-        return ["• состав не указан"]
+        return ["Состав: не указан"]
+    lines = ["Состав:"]
     for link in links:
         name = link.ingredient.name if link.ingredient else "?"
-        if link.amount is not None:
-            amount = f"{link.amount:g} {link.unit or 'g'}"
-        else:
-            amount = link.unit or ""
-        note = f" — {link.note}" if link.note else ""
-        lines.append(f"• {name}: {amount}{note}".rstrip(": "))
+        amount = f"{link.amount:g}" if link.amount is not None else "—"
+        unit = link.unit or "g"
+        note = f" ({link.note})" if link.note else ""
+        lines.append(f"· {name}: {amount} {unit}{note}")
     return lines
+
+
+def _fmt_dt(value) -> str | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=ZoneInfo("UTC"))
+    local = value.astimezone(ZoneInfo("Europe/Minsk"))
+    return local.strftime("%d.%m.%Y %H:%M")
 
 
 def _sorted_versions(dish: Dish) -> list[DishVersion]:
     return sorted(
         getattr(dish, "versions", []) or [],
-        key=lambda x: x.created_at or 0,
+        key=lambda v: v.created_at or v.id,
         reverse=True,
     )
 
@@ -147,80 +190,70 @@ def _pick_version(dish: Dish, version_id: str | None = None) -> DishVersion | No
     if not versions:
         return None
     if version_id:
-        for version in versions:
-            if version.id == version_id:
-                return version
-    for version in versions:
-        if version.is_current:
-            return version
+        for v in versions:
+            if v.id == version_id:
+                return v
+    for v in versions:
+        if v.is_current:
+            return v
+    if dish.current_version_id:
+        for v in versions:
+            if v.id == dish.current_version_id:
+                return v
     return versions[0]
 
 
 def _format_dish_card(dish: Dish, version: DishVersion | None = None) -> str:
-    """Single card for one dish; `version` switches recipe body inside the same card."""
     cat = DISH_CATEGORY_RU.get(dish.category or "", dish.category)
     lines = [f"<b>{dish.name}</b>"]
     if cat:
         lines.append(f"Категория: {cat}")
-
     if dish.freezable is True:
-        lines.append("Можно замораживать")
+        lines.append("Заморозка: да")
     elif dish.freezable is False:
-        lines.append("Не замораживать")
+        lines.append("Заморозка: нет")
 
     versions = _sorted_versions(dish)
     version = version or _pick_version(dish)
 
     if version:
-        mark = "текущая" if version.is_current else "архив"
-        lines.append("")
-        lines.append(
-            f"<b>Рецепт</b> · {_fmt_dt(version.created_at)} · {mark}"
-            f" · всего версий: {len(versions)}"
-        )
-        if version.title:
-            lines.append(version.title)
-        if version.result_comment:
-            lines.append(f"Результат: {version.result_comment}")
-        meta: list[str] = []
+        meta = []
         if version.cook_time_min is not None:
             meta.append(f"{version.cook_time_min} мин")
         if version.servings is not None:
             meta.append(f"{version.servings} порц.")
         if meta:
             lines.append(" · ".join(meta))
+        when = _fmt_dt(version.created_at)
+        title = version.title or version.result_comment or "рецепт"
+        lines.append(f"Версия: {title}" + (f" ({when})" if when else ""))
         if version.description:
             lines.append("")
             lines.append(version.description)
-        lines.append("")
-        lines.append("<b>Состав</b>")
         lines.extend(_ingredient_lines(version.ingredients))
         if version.instructions:
             lines.append("")
-            lines.append("<b>Приготовление</b>")
             lines.append(version.instructions)
         lines.append("")
         lines.append(
             _nutrition_line(version.kcal, version.protein_g, version.fat_g, version.carbs_g)
         )
+        if version.result_comment:
+            lines.append(f"Результат: {version.result_comment}")
     else:
-        # Legacy dish without versions yet
-        meta: list[str] = []
-        if dish.cook_time_min is not None:
-            meta.append(f"{dish.cook_time_min} мин")
-        if dish.servings is not None:
-            meta.append(f"{dish.servings} порц.")
-        if meta:
+        if dish.cook_time_min is not None or dish.servings is not None:
+            meta = []
+            if dish.cook_time_min is not None:
+                meta.append(f"{dish.cook_time_min} мин")
+            if dish.servings is not None:
+                meta.append(f"{dish.servings} порц.")
             lines.append(" · ".join(meta))
         if dish.description:
             lines.append("")
             lines.append(dish.description)
-        lines.append("")
-        lines.append("<b>Состав</b>")
         lines.extend(_ingredient_lines(dish.ingredients))
         if dish.instructions:
             lines.append("")
-            lines.append("<b>Приготовление</b>")
             lines.append(dish.instructions)
         lines.append("")
         lines.append(_nutrition_line(dish.kcal, dish.protein_g, dish.fat_g, dish.carbs_g))
@@ -238,34 +271,6 @@ def _dish_list_kind(dish: Dish) -> str:
     return "prep" if (dish.category or "") == PREP_CATEGORY else "dish"
 
 
-async def _show_dish_card(
-    target: Message,
-    dish: Dish,
-    *,
-    version_id: str | None = None,
-    edit: bool = False,
-) -> None:
-    version = _pick_version(dish, version_id)
-    text = _format_dish_card(dish, version)
-    versions = [
-        (v.id, _version_button_label(v))
-        for v in _sorted_versions(dish)
-    ]
-    markup = dish_card_keyboard(
-        dish.id,
-        versions,
-        selected_version_id=version.id if version else None,
-        list_kind=_dish_list_kind(dish),
-    )
-    if edit:
-        try:
-            await target.edit_text(text, reply_markup=markup)
-            return
-        except Exception:  # noqa: BLE001 — message not modified / can't edit
-            pass
-    await target.answer(text, reply_markup=markup)
-
-
 def _version_button_label(version: DishVersion) -> str:
     when = _fmt_dt(version.created_at) or "версия"
     prefix = "★ " if version.is_current else ""
@@ -279,7 +284,10 @@ def _version_button_label(version: DishVersion) -> str:
 def _format_shopping(item: ShoppingItem) -> str:
     mark = "куплено" if item.is_bought else "нужно купить"
     lines = [f"<b>{item.name}</b>", f"Статус: {mark}"]
-    if item.category:
+    shelf = _shelf_ru(item.category) if item.category else None
+    if shelf:
+        lines.append(f"Категория: {shelf}")
+    elif item.category:
         lines.append(f"Категория: {item.category}")
     if item.product:
         brand = f" ({item.product.brand})" if item.product.brand else ""
@@ -311,51 +319,9 @@ def _product_button_label(item: Product) -> str:
     return item.name
 
 
-async def _send_ingredients_list(target: Message, catalog: CatalogService) -> None:
-    rows = await catalog.list_ingredients()
-    if not rows:
-        await target.answer("Ингредиентов пока нет. Пришлите JSON.")
-        return
-    buttons = [(i.id, i.name) for i in rows]
-    await target.answer(
-        "<b>Ингредиенты</b>\nВыберите позицию:",
-        reply_markup=catalog_list_keyboard("ing", buttons),
-    )
-
-
-async def _send_products_list(target: Message, catalog: CatalogService) -> None:
-    rows = await catalog.list_products()
-    if not rows:
-        await target.answer("Продуктов пока нет. Пришлите JSON.")
-        return
-    buttons = [(p.id, _product_button_label(p)) for p in rows]
-    await target.answer(
-        "<b>Продукты</b>\nВыберите позицию:",
-        reply_markup=catalog_list_keyboard("prod", buttons),
-    )
-
-
-async def _send_dishes_list(
-    target: Message, catalog: CatalogService, *, edit: bool = False
+async def _edit_or_answer(
+    target: Message, text: str, *, markup=None, edit: bool = False
 ) -> None:
-    rows = await catalog.list_dishes(exclude_category=PREP_CATEGORY)
-    if not rows:
-        text = "Блюд пока нет. Пришлите JSON."
-        if edit:
-            try:
-                await target.edit_text(text)
-                return
-            except Exception:  # noqa: BLE001
-                pass
-        await target.answer(text)
-        return
-    buttons = []
-    for dish in rows:
-        cat = DISH_CATEGORY_RU.get(dish.category or "", dish.category)
-        label = f"{dish.name}" + (f" · {cat}" if cat else "")
-        buttons.append((dish.id, label))
-    text = "<b>Блюда</b>\nОдно блюдо = одна карточка. Версии рецепта — внутри."
-    markup = catalog_list_keyboard("dish", buttons)
     if edit:
         try:
             await target.edit_text(text, reply_markup=markup)
@@ -365,85 +331,173 @@ async def _send_dishes_list(
     await target.answer(text, reply_markup=markup)
 
 
-async def _send_preps_list(
-    target: Message, catalog: CatalogService, *, edit: bool = False
+async def _show_dish_card(
+    target: Message,
+    dish: Dish,
+    *,
+    version_id: str | None = None,
+    edit: bool = False,
 ) -> None:
-    rows = await catalog.list_dishes(category=PREP_CATEGORY)
-    if not rows:
-        text = "Заготовок пока нет. Пришлите JSON с category: \"prep\"."
-        if edit:
-            try:
-                await target.edit_text(text)
-                return
-            except Exception:  # noqa: BLE001
-                pass
-        await target.answer(text)
-        return
-    buttons = [(dish.id, dish.name) for dish in rows]
-    text = (
-        "<b>Заготовки</b>\n"
-        "Те же поля, что у блюд (состав, версии). В JSON: "
-        '<code>dish.upsert</code> + <code>category: "prep"</code>.'
+    version = _pick_version(dish, version_id)
+    text = _format_dish_card(dish, version)
+    versions = [(v.id, _version_button_label(v)) for v in _sorted_versions(dish)]
+    markup = dish_card_keyboard(
+        dish.id,
+        versions,
+        selected_version_id=version.id if version else None,
+        list_kind=_dish_list_kind(dish),
     )
-    markup = catalog_list_keyboard("prep", buttons)
-    if edit:
-        try:
-            await target.edit_text(text, reply_markup=markup)
-            return
-        except Exception:  # noqa: BLE001
-            pass
-    await target.answer(text, reply_markup=markup)
+    await _edit_or_answer(target, text, markup=markup, edit=edit)
 
 
-async def _send_shopping_list(target: Message, catalog: CatalogService) -> None:
-    rows = await catalog.list_shopping()
-    if not rows:
-        await target.answer("Список покупок пуст.")
-        return
-    buttons = [(s.id, f"{'✓ ' if s.is_bought else ''}{s.name}") for s in rows]
-    await target.answer(
-        "<b>Покупки</b>\nВыберите позицию:",
-        reply_markup=catalog_list_keyboard("shop", buttons),
-    )
+def _page_header(kind: str, page: PageResult) -> str:
+    title = LIST_TITLES.get(kind, kind)
+    bits = [f"<b>{title}</b>"]
+    if page.query:
+        bits.append(f"Поиск: «{page.query}»")
+    if page.total:
+        bits.append(f"{page.total} шт. · стр. {page.page + 1}/{page.pages}")
+    return "\n".join(bits)
 
 
-async def _send_deliveries_list(
-    target: Message, catalog: CatalogService, *, edit: bool = False
+async def _fetch_page(
+    catalog: CatalogService,
+    kind: str,
+    *,
+    page: int = 0,
+    q: str | None = None,
+) -> PageResult:
+    if kind == "ing":
+        return await catalog.list_ingredients(page=page, q=q)
+    if kind == "prod":
+        return await catalog.list_products(page=page, q=q)
+    if kind == "dish":
+        return await catalog.list_dishes(page=page, q=q, exclude_category=PREP_CATEGORY)
+    if kind == "prep":
+        return await catalog.list_dishes(page=page, q=q, category=PREP_CATEGORY)
+    if kind == "deliv":
+        return await catalog.list_deliveries(page=page, q=q)
+    if kind == "shop":
+        return await catalog.list_shopping(page=page, q=q)
+    return PageResult([], 0, 0, PAGE_SIZE, q)
+
+
+def _page_buttons(kind: str, page: PageResult) -> list[tuple[str, str]]:
+    if kind == "ing":
+        return [(i.id, i.name) for i in page.items]
+    if kind == "prod":
+        return [(p.id, _product_button_label(p)) for p in page.items]
+    if kind == "dish":
+        buttons = []
+        for dish in page.items:
+            cat = DISH_CATEGORY_RU.get(dish.category or "", dish.category)
+            label = f"{dish.name}" + (f" · {cat}" if cat else "")
+            buttons.append((dish.id, label))
+        return buttons
+    if kind == "prep":
+        return [(d.id, d.name) for d in page.items]
+    if kind == "deliv":
+        buttons = []
+        for item in page.items:
+            cat = DELIVERY_CATEGORY_RU.get(item.category or "", item.category)
+            label = f"{item.name}" + (f" · {cat}" if cat else "")
+            buttons.append((item.id, label))
+        return buttons
+    if kind == "shop":
+        return [(s.id, f"{'✓ ' if s.is_bought else ''}{s.name}") for s in page.items]
+    return []
+
+
+def _empty_list_text(kind: str, query: str | None) -> str:
+    if query:
+        return f"Ничего не найдено по «{query}»."
+    defaults = {
+        "ing": "Ингредиентов пока нет. Пришлите JSON.",
+        "prod": "Продуктов пока нет. Пришлите JSON.",
+        "dish": "Блюд пока нет. Пришлите JSON.",
+        "prep": 'Заготовок пока нет. Пришлите JSON с category: "prep".',
+        "deliv": "Доставок пока нет. Пришлите JSON.",
+        "shop": "Список покупок пуст.",
+    }
+    return defaults.get(kind, "Пусто.")
+
+
+async def _send_catalog_list(
+    target: Message,
+    catalog: CatalogService,
+    kind: str,
+    *,
+    page: int = 0,
+    q: str | None = None,
+    edit: bool = False,
+    state: FSMContext | None = None,
 ) -> None:
-    rows = await catalog.list_deliveries()
-    if not rows:
-        text = "Доставок пока нет. Пришлите JSON."
-        if edit:
-            try:
-                await target.edit_text(text)
-                return
-            except Exception:  # noqa: BLE001
-                pass
-        await target.answer(text)
+    if state is not None:
+        await state.update_data(list_kind=kind, list_page=page, list_q=q)
+
+    result = await _fetch_page(catalog, kind, page=page, q=q)
+    if not result.items:
+        text = _empty_list_text(kind, q)
+        markup = catalog_list_keyboard(kind, [], page=0, pages=1, query=q)
+        if q:
+            await _edit_or_answer(target, text, markup=markup, edit=edit)
+        else:
+            await _edit_or_answer(target, text, edit=edit)
         return
-    buttons = []
-    for item in rows:
-        cat = DELIVERY_CATEGORY_RU.get(item.category or "", item.category)
-        label = f"{item.name}" + (f" · {cat}" if cat else "")
-        buttons.append((item.id, label))
-    text = "<b>Доставки</b>\nГде что заказывать — ссылки и заметки."
-    markup = catalog_list_keyboard("deliv", buttons)
-    if edit:
-        try:
-            await target.edit_text(text, reply_markup=markup)
-            return
-        except Exception:  # noqa: BLE001
-            pass
-    await target.answer(text, reply_markup=markup)
+
+    subtitle = {
+        "dish": "Одно блюдо = одна карточка. Версии — внутри.",
+        "prep": 'Те же поля, что у блюд. JSON: dish.upsert + category "prep".',
+        "deliv": "Где что заказывать — ссылки и заметки.",
+        "shop": "Отметьте купленное или удалите позицию.",
+    }.get(kind, "Выберите позицию:")
+
+    text = _page_header(kind, result) + "\n" + subtitle
+    markup = catalog_list_keyboard(
+        kind,
+        _page_buttons(kind, result),
+        page=result.page,
+        pages=result.pages,
+        query=result.query,
+    )
+    await _edit_or_answer(target, text, markup=markup, edit=edit)
+
+
+async def _show_need_checklist(
+    target: Message,
+    dish: Dish,
+    remaining: list[tuple[str, str]],
+    *,
+    edit: bool = True,
+) -> None:
+    if not remaining:
+        text = (
+            f"<b>{dish.name}</b>\n\n"
+            "Состав разобран: всё отмечено «есть» или ушло в покупки."
+        )
+        markup = need_checklist_keyboard(dish.id, [])
+        await _edit_or_answer(target, text, markup=markup, edit=edit)
+        return
+
+    lines = [
+        f"<b>{dish.name}</b> — проверить состав",
+        "Есть — пропустить. В покупки — добавить в список.",
+        "",
+    ]
+    for _ing_id, label in remaining:
+        lines.append(f"· {label}")
+    markup = need_checklist_keyboard(dish.id, remaining)
+    await _edit_or_answer(target, "\n".join(lines), markup=markup, edit=edit)
 
 
 @router.message(CommandStart())
 @router.message(F.text == BTN_HOME)
-async def cmd_start(message: Message) -> None:
+async def cmd_start(message: Message, state: FSMContext) -> None:
+    await state.clear()
     await message.answer(
         "<b>Домашняя кухня</b>\n\n"
         "Пришлите JSON текстом или файлом — добавлю в каталог.\n"
-        "Кнопки — списки блюд/продуктов.\n"
+        "Кнопки — списки. У блюда: «Проверить состав» → покупки.\n"
         "Правила для ИИ-агента: /rules",
         reply_markup=main_keyboard(),
     )
@@ -458,7 +512,6 @@ def _prompt_file() -> Path:
 
 
 def _extract_system_prompt_body(raw: str) -> str:
-    """Body between the first two lines that are exactly --- (not table |---|)."""
     lines = raw.splitlines()
     fences = [i for i, line in enumerate(lines) if line.strip() == "---"]
     if len(fences) >= 2:
@@ -469,13 +522,15 @@ def _extract_system_prompt_body(raw: str) -> str:
 
 @router.message(Command("help"))
 @router.message(F.text == BTN_HELP)
-async def cmd_help(message: Message) -> None:
+async def cmd_help(message: Message, state: FSMContext) -> None:
+    await state.clear()
     await message.answer(
         "<b>Импорт JSON</b>\n\n"
         "1. /rules — скачайте правила для ИИ-агента\n"
         "2. Вставьте их в system prompt агента\n"
-        "3. Надиктуйте блюдо/заготовку/продукт/доставку → пришлите JSON боту\n\n"
-        "Заготовки = dish.upsert + category prep. Версии рецепта — внутри карточки. БЖУ на 100 г."
+        "3. Надиктуйте блюдо/заготовку/продукт/доставку → JSON боту\n\n"
+        "То же имя блюда + состав = новая версия. "
+        "У блюда кнопка «Проверить состав» → покупки. БЖУ на 100 г."
     )
 
 
@@ -495,43 +550,65 @@ async def cmd_prompt(message: Message) -> None:
         filename="ai_agent_rules.txt",
     )
     await message.answer_document(document)
-    log.info("prompt downloaded user=%s bytes=%s", message.from_user.id if message.from_user else "?", len(body))
+    log.info(
+        "prompt downloaded user=%s bytes=%s",
+        message.from_user.id if message.from_user else "?",
+        len(body),
+    )
 
 
 @router.message(Command("ingredients"))
 @router.message(F.text == BTN_INGREDIENTS)
-async def cmd_ingredients(message: Message, catalog: CatalogService) -> None:
-    await _send_ingredients_list(message, catalog)
+async def cmd_ingredients(
+    message: Message, catalog: CatalogService, state: FSMContext
+) -> None:
+    await state.clear()
+    await _send_catalog_list(message, catalog, "ing", state=state)
 
 
 @router.message(Command("products"))
 @router.message(F.text == BTN_PRODUCTS)
-async def cmd_products(message: Message, catalog: CatalogService) -> None:
-    await _send_products_list(message, catalog)
+async def cmd_products(
+    message: Message, catalog: CatalogService, state: FSMContext
+) -> None:
+    await state.clear()
+    await _send_catalog_list(message, catalog, "prod", state=state)
 
 
 @router.message(Command("dishes"))
 @router.message(F.text == BTN_DISHES)
-async def cmd_dishes(message: Message, catalog: CatalogService) -> None:
-    await _send_dishes_list(message, catalog)
+async def cmd_dishes(
+    message: Message, catalog: CatalogService, state: FSMContext
+) -> None:
+    await state.clear()
+    await _send_catalog_list(message, catalog, "dish", state=state)
 
 
 @router.message(Command("preps"))
 @router.message(F.text == BTN_PREPS)
-async def cmd_preps(message: Message, catalog: CatalogService) -> None:
-    await _send_preps_list(message, catalog)
+async def cmd_preps(
+    message: Message, catalog: CatalogService, state: FSMContext
+) -> None:
+    await state.clear()
+    await _send_catalog_list(message, catalog, "prep", state=state)
 
 
 @router.message(Command("deliveries"))
 @router.message(F.text == BTN_DELIVERIES)
-async def cmd_deliveries(message: Message, catalog: CatalogService) -> None:
-    await _send_deliveries_list(message, catalog)
+async def cmd_deliveries(
+    message: Message, catalog: CatalogService, state: FSMContext
+) -> None:
+    await state.clear()
+    await _send_catalog_list(message, catalog, "deliv", state=state)
 
 
 @router.message(Command("shopping"))
 @router.message(F.text == BTN_SHOPPING)
-async def cmd_shopping(message: Message, catalog: CatalogService) -> None:
-    await _send_shopping_list(message, catalog)
+async def cmd_shopping(
+    message: Message, catalog: CatalogService, state: FSMContext
+) -> None:
+    await state.clear()
+    await _send_catalog_list(message, catalog, "shop", state=state)
 
 
 @router.callback_query(F.data == "noop")
@@ -540,38 +617,115 @@ async def on_noop(callback: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data.startswith("list:"))
-async def on_back_to_list(callback: CallbackQuery, catalog: CatalogService) -> None:
+async def on_back_to_list(
+    callback: CallbackQuery, catalog: CatalogService, state: FSMContext
+) -> None:
     kind = (callback.data or "").split(":", 1)[1]
     message = callback.message
     if not isinstance(message, Message):
         await callback.answer()
         return
     await callback.answer()
-    if kind == "ing":
-        await _send_ingredients_list(message, catalog)
-    elif kind == "prod":
-        await _send_products_list(message, catalog)
-    elif kind == "dish":
-        await _send_dishes_list(message, catalog, edit=True)
-    elif kind == "prep":
-        await _send_preps_list(message, catalog, edit=True)
-    elif kind == "deliv":
-        await _send_deliveries_list(message, catalog, edit=True)
-    elif kind == "shop":
-        await _send_shopping_list(message, catalog)
+    data = await state.get_data()
+    q = data.get("list_q") if data.get("list_kind") == kind else None
+    await state.set_state(None)
+    await _send_catalog_list(
+        message, catalog, kind, page=0, q=q, edit=True, state=state
+    )
+
+
+@router.callback_query(F.data.startswith("page:"))
+async def on_page(
+    callback: CallbackQuery, catalog: CatalogService, state: FSMContext
+) -> None:
+    parts = (callback.data or "").split(":")
+    if len(parts) != 3:
+        await callback.answer()
+        return
+    _, kind, page_s = parts
+    try:
+        page = int(page_s)
+    except ValueError:
+        await callback.answer()
+        return
+    message = callback.message
+    if not isinstance(message, Message):
+        await callback.answer()
+        return
+    data = await state.get_data()
+    q = data.get("list_q") if data.get("list_kind") == kind else None
+    await callback.answer()
+    await _send_catalog_list(
+        message, catalog, kind, page=page, q=q, edit=True, state=state
+    )
+
+
+@router.callback_query(F.data.startswith("search:"))
+async def on_search_start(callback: CallbackQuery, state: FSMContext) -> None:
+    kind = (callback.data or "").split(":", 1)[1]
+    await state.set_state(CatalogSearch.waiting_query)
+    await state.update_data(list_kind=kind)
+    await callback.answer()
+    if isinstance(callback.message, Message):
+        await callback.message.answer(
+            f"Введите текст поиска для «{LIST_TITLES.get(kind, kind)}» "
+            "(или /start чтобы отменить):"
+        )
+
+
+@router.callback_query(F.data.startswith("clearq:"))
+async def on_clear_query(
+    callback: CallbackQuery, catalog: CatalogService, state: FSMContext
+) -> None:
+    kind = (callback.data or "").split(":", 1)[1]
+    message = callback.message
+    if not isinstance(message, Message):
+        await callback.answer()
+        return
+    await callback.answer()
+    await _send_catalog_list(
+        message, catalog, kind, page=0, q=None, edit=True, state=state
+    )
+
+
+@router.message(StateFilter(CatalogSearch.waiting_query), F.text)
+async def on_search_query(
+    message: Message, catalog: CatalogService, state: FSMContext
+) -> None:
+    text = (message.text or "").strip()
+    if text.startswith("/") or text in {
+        BTN_HOME,
+        BTN_HELP,
+        BTN_INGREDIENTS,
+        BTN_PRODUCTS,
+        BTN_DISHES,
+        BTN_PREPS,
+        BTN_DELIVERIES,
+        BTN_SHOPPING,
+    }:
+        await state.clear()
+        return
+    data = await state.get_data()
+    kind = data.get("list_kind") or "dish"
+    await state.set_state(None)
+    await _send_catalog_list(
+        message, catalog, kind, page=0, q=text, edit=False, state=state
+    )
 
 
 @router.callback_query(F.data.startswith("ing:"))
 async def on_ingredient(callback: CallbackQuery, catalog: CatalogService) -> None:
     item_id = (callback.data or "")[4:]
     item = await catalog.get_ingredient(item_id)
-    if not item or not callback.message:
+    if not item or not isinstance(callback.message, Message):
         await callback.answer("Не найдено", show_alert=True)
         return
     await callback.answer()
-    await callback.message.answer(
+    await _edit_or_answer(
+        callback.message,
         _format_ingredient(item),
-        reply_markup=back_to_list_keyboard("ing"),
+        markup=back_to_list_keyboard("ing"),
+        edit=True,
     )
 
 
@@ -579,13 +733,15 @@ async def on_ingredient(callback: CallbackQuery, catalog: CatalogService) -> Non
 async def on_product(callback: CallbackQuery, catalog: CatalogService) -> None:
     item_id = (callback.data or "")[5:]
     item = await catalog.get_product(item_id)
-    if not item or not callback.message:
+    if not item or not isinstance(callback.message, Message):
         await callback.answer("Не найдено", show_alert=True)
         return
     await callback.answer()
-    await callback.message.answer(
+    await _edit_or_answer(
+        callback.message,
         _format_product(item),
-        reply_markup=back_to_list_keyboard("prod"),
+        markup=back_to_list_keyboard("prod"),
+        edit=True,
     )
 
 
@@ -597,7 +753,6 @@ async def on_dish(callback: CallbackQuery, catalog: CatalogService) -> None:
         await callback.answer("Не найдено", show_alert=True)
         return
     await callback.answer()
-    # Open dish inside the same message (list → card → versions all one bubble)
     await _show_dish_card(callback.message, item, edit=True)
 
 
@@ -633,8 +788,22 @@ async def on_version(callback: CallbackQuery, catalog: CatalogService) -> None:
 
 
 @router.callback_query(F.data.startswith("verd:"))
-async def on_version_delete(callback: CallbackQuery, catalog: CatalogService) -> None:
+async def on_version_delete_ask(callback: CallbackQuery) -> None:
     version_id = (callback.data or "")[5:]
+    if not isinstance(callback.message, Message):
+        await callback.answer()
+        return
+    await callback.answer()
+    await callback.message.edit_reply_markup(
+        reply_markup=confirm_delete_version_keyboard(version_id)
+    )
+
+
+@router.callback_query(F.data.startswith("verdok:"))
+async def on_version_delete_confirm(
+    callback: CallbackQuery, catalog: CatalogService
+) -> None:
+    version_id = (callback.data or "")[7:]
     ok, dish_id = await catalog.delete_dish_version(version_id)
     if not ok:
         await callback.answer("Уже удалено", show_alert=True)
@@ -646,32 +815,184 @@ async def on_version_delete(callback: CallbackQuery, catalog: CatalogService) ->
             await _show_dish_card(callback.message, dish, edit=True)
 
 
+@router.callback_query(F.data.startswith("need:"))
+async def on_need_start(
+    callback: CallbackQuery, catalog: CatalogService, state: FSMContext
+) -> None:
+    dish_id = (callback.data or "")[5:]
+    dish = await catalog.get_dish(dish_id)
+    if not dish or not isinstance(callback.message, Message):
+        await callback.answer("Не найдено", show_alert=True)
+        return
+
+    version = _pick_version(dish)
+    links = version.ingredients if version else dish.ingredients
+    remaining: list[tuple[str, str]] = []
+    for link in links or []:
+        if not link.ingredient:
+            continue
+        label = link.ingredient.name
+        if link.amount is not None:
+            label = f"{label} ({link.amount:g} {link.unit or 'g'})"
+        remaining.append((link.ingredient_id, label))
+
+    if not remaining:
+        await callback.answer("Состав пуст", show_alert=True)
+        return
+
+    await state.set_state(NeedCheck.active)
+    await state.update_data(need_dish_id=dish_id, need_items=remaining)
+    await callback.answer()
+    await _show_need_checklist(callback.message, dish, remaining, edit=True)
+
+
+@router.callback_query(F.data.startswith("needh:"), StateFilter(NeedCheck.active))
+async def on_need_have(
+    callback: CallbackQuery, catalog: CatalogService, state: FSMContext
+) -> None:
+    try:
+        idx = int((callback.data or "").split(":")[1])
+    except (IndexError, ValueError):
+        await callback.answer()
+        return
+    data = await state.get_data()
+    remaining: list = list(data.get("need_items") or [])
+    dish_id = data.get("need_dish_id")
+    if idx < 0 or idx >= len(remaining) or not dish_id:
+        await callback.answer("Устарело", show_alert=True)
+        return
+    remaining.pop(idx)
+    await state.update_data(need_items=remaining)
+    dish = await catalog.get_dish(dish_id)
+    if not dish or not isinstance(callback.message, Message):
+        await callback.answer()
+        return
+    await callback.answer("Есть")
+    if not remaining:
+        await state.clear()
+    await _show_need_checklist(callback.message, dish, remaining, edit=True)
+
+
+@router.callback_query(F.data.startswith("needb:"), StateFilter(NeedCheck.active))
+async def on_need_buy(
+    callback: CallbackQuery, catalog: CatalogService, state: FSMContext
+) -> None:
+    try:
+        idx = int((callback.data or "").split(":")[1])
+    except (IndexError, ValueError):
+        await callback.answer()
+        return
+    data = await state.get_data()
+    remaining: list = list(data.get("need_items") or [])
+    dish_id = data.get("need_dish_id")
+    if idx < 0 or idx >= len(remaining) or not dish_id:
+        await callback.answer("Устарело", show_alert=True)
+        return
+    ing_id, label = remaining.pop(idx)
+    # label may include amount — shopping name = ingredient name before " ("
+    name = label.split(" (", 1)[0]
+    dish = await catalog.get_dish(dish_id)
+    category = None
+    if dish:
+        version = _pick_version(dish)
+        links = version.ingredients if version else dish.ingredients
+        for link in links or []:
+            if link.ingredient_id == ing_id and link.ingredient:
+                name = link.ingredient.name
+                category = link.ingredient.category
+                break
+    await catalog.add_shopping_by_name(name, category=category)
+    await state.update_data(need_items=remaining)
+    if not dish or not isinstance(callback.message, Message):
+        await callback.answer("В покупки")
+        return
+    await callback.answer(f"В покупки: {name}")
+    if not remaining:
+        await state.clear()
+    await _show_need_checklist(callback.message, dish, remaining, edit=True)
+
+
+@router.callback_query(F.data.startswith("needdone:"))
+async def on_need_done(
+    callback: CallbackQuery, catalog: CatalogService, state: FSMContext
+) -> None:
+    dish_id = (callback.data or "")[9:]
+    await state.clear()
+    dish = await catalog.get_dish(dish_id)
+    if not dish or not isinstance(callback.message, Message):
+        await callback.answer("Не найдено", show_alert=True)
+        return
+    await callback.answer()
+    await _show_dish_card(callback.message, dish, edit=True)
+
+
+@router.callback_query(F.data.startswith("needh:"))
+@router.callback_query(F.data.startswith("needb:"))
+async def on_need_stale(callback: CallbackQuery) -> None:
+    await callback.answer("Сначала нажмите «Проверить состав»", show_alert=True)
+
+
 @router.callback_query(F.data.startswith("shop:"))
 async def on_shopping(callback: CallbackQuery, catalog: CatalogService) -> None:
     item_id = (callback.data or "")[5:]
     item = await catalog.get_shopping(item_id)
-    if not item or not callback.message:
+    if not item or not isinstance(callback.message, Message):
         await callback.answer("Не найдено", show_alert=True)
         return
     await callback.answer()
-    await callback.message.answer(
+    await _edit_or_answer(
+        callback.message,
         _format_shopping(item),
-        reply_markup=back_to_list_keyboard("shop"),
+        markup=shopping_card_keyboard(item.id),
+        edit=True,
     )
+
+
+@router.callback_query(F.data.startswith("shopok:"))
+async def on_shopping_ok(
+    callback: CallbackQuery, catalog: CatalogService, state: FSMContext
+) -> None:
+    item_id = (callback.data or "")[7:]
+    ok = await catalog.mark_shopping_bought(item_id)
+    if not ok:
+        await callback.answer("Уже нет", show_alert=True)
+        return
+    await callback.answer("Куплено")
+    if isinstance(callback.message, Message):
+        await _send_catalog_list(
+            callback.message, catalog, "shop", edit=True, state=state
+        )
+
+
+@router.callback_query(F.data.startswith("shoprm:"))
+async def on_shopping_rm(
+    callback: CallbackQuery, catalog: CatalogService, state: FSMContext
+) -> None:
+    item_id = (callback.data or "")[7:]
+    ok = await catalog.remove_shopping(item_id)
+    if not ok:
+        await callback.answer("Уже нет", show_alert=True)
+        return
+    await callback.answer("Удалено")
+    if isinstance(callback.message, Message):
+        await _send_catalog_list(
+            callback.message, catalog, "shop", edit=True, state=state
+        )
 
 
 @router.callback_query(F.data.startswith("deliv:"))
 async def on_delivery(callback: CallbackQuery, catalog: CatalogService) -> None:
     item_id = (callback.data or "")[6:]
     item = await catalog.get_delivery(item_id)
-    if not item or not callback.message:
+    if not item or not isinstance(callback.message, Message):
         await callback.answer("Не найдено", show_alert=True)
         return
     await callback.answer()
-    await callback.message.answer(
+    await _edit_or_answer(
+        callback.message,
         _format_delivery(item),
-        reply_markup=back_to_list_keyboard("deliv"),
-        disable_web_page_preview=False,
+        markup=back_to_list_keyboard("deliv"),
+        edit=True,
     )
 
 
@@ -679,7 +1000,6 @@ def _format_import_error(exc: Exception) -> str:
     msg = str(exc).strip()
     if len(msg) > 350:
         msg = msg[:347] + "…"
-    # Escape HTML special chars for Telegram
     msg = msg.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     return (
         "Не удалось принять пакет.\n"
@@ -705,6 +1025,10 @@ async def _apply_json_text(message: Message, text: str, import_engine: ImportEng
             report.message,
         )
         await message.answer(_format_import_error(Exception(report.message or "import error")))
+        return
+    if report.status == "conflict":
+        log.warning("import conflict key=%s", report.idempotency_key)
+        await message.answer(report.summary_text())
         return
 
     log.info(

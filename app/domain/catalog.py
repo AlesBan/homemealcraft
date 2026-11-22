@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from dataclasses import dataclass
+
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
@@ -15,71 +17,155 @@ from app.db.models import (
     ShoppingItem,
 )
 
+PAGE_SIZE = 15
+
+
+@dataclass
+class PageResult:
+    items: list
+    total: int
+    page: int
+    page_size: int
+    query: str | None = None
+
+    @property
+    def pages(self) -> int:
+        if self.total <= 0:
+            return 1
+        return max(1, (self.total + self.page_size - 1) // self.page_size)
+
 
 class CatalogService:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
 
-    async def list_ingredients(self, limit: int = 30) -> list[Ingredient]:
+    async def list_ingredients(
+        self,
+        *,
+        page: int = 0,
+        page_size: int = PAGE_SIZE,
+        q: str | None = None,
+    ) -> PageResult:
         async with self._session_factory() as session:
+            stmt = select(Ingredient)
+            count_stmt = select(func.count()).select_from(Ingredient)
+            if q:
+                like = f"%{q.strip()}%"
+                stmt = stmt.where(Ingredient.name.ilike(like))
+                count_stmt = count_stmt.where(Ingredient.name.ilike(like))
+            total = int(await session.scalar(count_stmt) or 0)
             rows = await session.scalars(
-                select(Ingredient).order_by(Ingredient.name).limit(limit)
+                stmt.order_by(Ingredient.name)
+                .offset(page * page_size)
+                .limit(page_size)
             )
-            return list(rows)
+            return PageResult(list(rows), total, page, page_size, q)
 
-    async def list_products(self, limit: int = 30) -> list[Product]:
+    async def list_products(
+        self,
+        *,
+        page: int = 0,
+        page_size: int = PAGE_SIZE,
+        q: str | None = None,
+    ) -> PageResult:
         async with self._session_factory() as session:
+            stmt = select(Product).options(selectinload(Product.ingredient))
+            count_stmt = select(func.count()).select_from(Product)
+            if q:
+                like = f"%{q.strip()}%"
+                filt = or_(Product.name.ilike(like), Product.brand.ilike(like))
+                stmt = stmt.where(filt)
+                count_stmt = count_stmt.where(filt)
+            total = int(await session.scalar(count_stmt) or 0)
             rows = await session.scalars(
-                select(Product)
-                .options(selectinload(Product.ingredient))
-                .order_by(Product.name)
-                .limit(limit)
+                stmt.order_by(Product.name)
+                .offset(page * page_size)
+                .limit(page_size)
             )
-            return list(rows)
+            return PageResult(list(rows), total, page, page_size, q)
 
     async def list_dishes(
         self,
-        limit: int = 30,
         *,
+        page: int = 0,
+        page_size: int = PAGE_SIZE,
+        q: str | None = None,
         category: str | None = None,
         exclude_category: str | None = None,
-    ) -> list[Dish]:
+    ) -> PageResult:
         async with self._session_factory() as session:
-            stmt = (
-                select(Dish)
-                .options(selectinload(Dish.ingredients).selectinload(DishIngredient.ingredient))
-                .order_by(Dish.name)
-                .limit(limit)
+            stmt = select(Dish).options(
+                selectinload(Dish.ingredients).selectinload(DishIngredient.ingredient)
             )
+            count_stmt = select(func.count()).select_from(Dish)
             if category is not None:
                 stmt = stmt.where(Dish.category == category)
+                count_stmt = count_stmt.where(Dish.category == category)
             if exclude_category is not None:
-                stmt = stmt.where(
-                    (Dish.category.is_(None)) | (Dish.category != exclude_category)
-                )
-            rows = await session.scalars(stmt)
-            return list(rows)
+                filt = (Dish.category.is_(None)) | (Dish.category != exclude_category)
+                stmt = stmt.where(filt)
+                count_stmt = count_stmt.where(filt)
+            if q:
+                like = f"%{q.strip()}%"
+                stmt = stmt.where(Dish.name.ilike(like))
+                count_stmt = count_stmt.where(Dish.name.ilike(like))
+            total = int(await session.scalar(count_stmt) or 0)
+            rows = await session.scalars(
+                stmt.order_by(Dish.name)
+                .offset(page * page_size)
+                .limit(page_size)
+            )
+            return PageResult(list(rows), total, page, page_size, q)
 
     async def list_shopping(
-        self, include_bought: bool = False, limit: int = 50
-    ) -> list[ShoppingItem]:
+        self,
+        *,
+        include_bought: bool = False,
+        page: int = 0,
+        page_size: int = PAGE_SIZE,
+        q: str | None = None,
+    ) -> PageResult:
         async with self._session_factory() as session:
             stmt = select(ShoppingItem).options(
                 selectinload(ShoppingItem.product).selectinload(Product.ingredient)
             )
+            count_stmt = select(func.count()).select_from(ShoppingItem)
             if not include_bought:
                 stmt = stmt.where(ShoppingItem.is_bought.is_(False))
+                count_stmt = count_stmt.where(ShoppingItem.is_bought.is_(False))
+            if q:
+                like = f"%{q.strip()}%"
+                stmt = stmt.where(ShoppingItem.name.ilike(like))
+                count_stmt = count_stmt.where(ShoppingItem.name.ilike(like))
+            total = int(await session.scalar(count_stmt) or 0)
             rows = await session.scalars(
-                stmt.order_by(ShoppingItem.created_at.desc()).limit(limit)
+                stmt.order_by(ShoppingItem.created_at.desc())
+                .offset(page * page_size)
+                .limit(page_size)
             )
-            return list(rows)
+            return PageResult(list(rows), total, page, page_size, q)
 
-    async def list_deliveries(self, limit: int = 50) -> list[Delivery]:
+    async def list_deliveries(
+        self,
+        *,
+        page: int = 0,
+        page_size: int = PAGE_SIZE,
+        q: str | None = None,
+    ) -> PageResult:
         async with self._session_factory() as session:
+            stmt = select(Delivery)
+            count_stmt = select(func.count()).select_from(Delivery)
+            if q:
+                like = f"%{q.strip()}%"
+                stmt = stmt.where(Delivery.name.ilike(like))
+                count_stmt = count_stmt.where(Delivery.name.ilike(like))
+            total = int(await session.scalar(count_stmt) or 0)
             rows = await session.scalars(
-                select(Delivery).order_by(Delivery.name).limit(limit)
+                stmt.order_by(Delivery.name)
+                .offset(page * page_size)
+                .limit(page_size)
             )
-            return list(rows)
+            return PageResult(list(rows), total, page, page_size, q)
 
     async def get_ingredient(self, item_id: str) -> Ingredient | None:
         async with self._session_factory() as session:
@@ -156,3 +242,35 @@ class CatalogService:
     async def get_delivery(self, item_id: str) -> Delivery | None:
         async with self._session_factory() as session:
             return await session.get(Delivery, item_id)
+
+    async def add_shopping_by_name(
+        self, name: str, *, category: str | None = None
+    ) -> ShoppingItem:
+        async with self._session_factory() as session:
+            item = ShoppingItem(
+                name=name.strip(),
+                category=category,
+                is_bought=False,
+            )
+            session.add(item)
+            await session.commit()
+            await session.refresh(item)
+            return item
+
+    async def mark_shopping_bought(self, item_id: str) -> bool:
+        async with self._session_factory() as session:
+            item = await session.get(ShoppingItem, item_id)
+            if item is None:
+                return False
+            item.is_bought = True
+            await session.commit()
+            return True
+
+    async def remove_shopping(self, item_id: str) -> bool:
+        async with self._session_factory() as session:
+            item = await session.get(ShoppingItem, item_id)
+            if item is None:
+                return False
+            await session.delete(item)
+            await session.commit()
+            return True

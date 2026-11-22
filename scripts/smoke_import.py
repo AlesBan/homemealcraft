@@ -83,9 +83,50 @@ async def main() -> None:
     packet = ImportPacket.model_validate(SAMPLE)
     report = await engine.apply_packet(packet)
     print("first:", report.status, report.summary_text())
+    assert report.status == "applied"
 
     report2 = await engine.apply_packet(packet)
     print("second:", report2.status)
+    assert report2.status == "already_applied"
+
+    conflict = {
+        **SAMPLE,
+        "actions": [
+            {
+                "op": "dish.upsert",
+                "name": "Сырники",
+                "category": "breakfast",
+                "ingredients": [
+                    {"ingredient_name": "Творог", "amount": 250, "unit": "g"},
+                ],
+            }
+        ],
+    }
+    report_conflict = await engine.apply_packet(ImportPacket.model_validate(conflict))
+    print("conflict:", report_conflict.status, report_conflict.summary_text())
+    assert report_conflict.status == "conflict"
+
+    # Same dish name + ingredients → new version
+    version_packet = {
+        "schema_version": "1.0",
+        "idempotency_key": "smoke-syrniki-v2",
+        "source": "test",
+        "actions": [
+            {
+                "op": "dish.upsert",
+                "name": "Сырники",
+                "category": "breakfast",
+                "result_comment": "влажнее",
+                "ingredients": [
+                    {"ingredient_name": "Творог", "amount": 250, "unit": "g"},
+                    {"ingredient_name": "Мука", "amount": 30, "unit": "g"},
+                ],
+            }
+        ],
+    }
+    report_v = await engine.apply_packet(ImportPacket.model_validate(version_packet))
+    print("new version:", report_v.status, report_v.summary_text())
+    assert report_v.status == "applied"
 
     patch = {
         **SAMPLE,
@@ -104,22 +145,19 @@ async def main() -> None:
     print("patch:", report3.status, report3.summary_text())
 
     products = await catalog.list_products()
-    dishes = await catalog.list_dishes()
+    dishes = await catalog.list_dishes(exclude_category="prep")
     shopping = await catalog.list_shopping()
     deliveries = await catalog.list_deliveries()
-    print("products:", [(p.brand, p.kcal, p.ingredient.name if p.ingredient else None) for p in products])
-    print(
-        "dishes:",
-        [
-            (
-                d.name,
-                [(li.ingredient.name, li.amount) for li in d.ingredients],
-            )
-            for d in dishes
-        ],
-    )
-    print("shopping:", [(s.name, s.product.ingredient.name if s.product and s.product.ingredient else None) for s in shopping])
-    print("deliveries:", [(d.name, d.url, d.category) for d in deliveries])
+    dish = (await catalog.list_dishes(q="Сырники")).items[0]
+    full = await catalog.get_dish(dish.id)
+    assert full is not None
+    versions = full.versions or []
+    print("products:", [(p.brand, p.kcal, p.ingredient.name if p.ingredient else None) for p in products.items])
+    print("dishes:", dishes.total, "versions:", len(versions))
+    assert len(versions) >= 2
+    print("shopping:", [(s.name, s.product.ingredient.name if s.product and s.product.ingredient else None) for s in shopping.items])
+    print("deliveries:", [(d.name, d.url, d.category) for d in deliveries.items])
+    print("OK")
 
 
 if __name__ == "__main__":

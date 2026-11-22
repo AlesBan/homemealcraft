@@ -80,13 +80,19 @@ async def main() -> None:
     dp.include_router(router)
     await bot.set_my_commands(BOT_COMMANDS)
 
+    if not settings.telegram_user_ids:
+        log.error(
+            "TELEGRAM_USER_IDS is empty — nobody can use the bot. "
+            "Set comma-separated user ids in .env"
+        )
+
     me = await bot.get_me()
     log.info(
         "started @%s tz=%s db=%s allow=%s",
         me.username,
         settings.timezone,
         settings.database_path,
-        settings.telegram_user_ids or "any",
+        settings.telegram_user_ids or "NONE",
     )
 
     try:

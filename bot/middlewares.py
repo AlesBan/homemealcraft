@@ -8,6 +8,8 @@ from typing import Any
 from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery, Message, TelegramObject, User
 
+from bot.filters import MENU_BUTTONS
+
 log = logging.getLogger("homemealcraft")
 
 
@@ -43,8 +45,9 @@ class AccessControlMiddleware(BaseMiddleware):
         if user is None and isinstance(event, (Message, CallbackQuery)):
             user = event.from_user
 
-        if self.allowed and (user is None or user.id not in self.allowed):
-            log.debug("drop unauthorized %s", _user_label(user))
+        # Empty whitelist = deny everyone (misconfigured .env footgun).
+        if not self.allowed or user is None or user.id not in self.allowed:
+            log.debug("drop unauthorized %s allow=%s", _user_label(user), bool(self.allowed))
             if isinstance(event, CallbackQuery):
                 try:
                     await event.answer()
@@ -63,14 +66,7 @@ class MessageFilterMiddleware(BaseMiddleware):
     - ignore stickers, voice, photos, etc. without spamming replies
     """
 
-    MENU_TEXTS = {
-        "🏠 Главная",
-        "🥕 Ингредиенты",
-        "📦 Продукты",
-        "🍽 Блюда",
-        "🛒 Покупки",
-        "❓ JSON",
-    }
+    MENU_TEXTS = MENU_BUTTONS
 
     async def __call__(
         self,

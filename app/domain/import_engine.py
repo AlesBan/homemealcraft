@@ -90,6 +90,12 @@ class ImportReport:
     def summary_text(self) -> str:
         if self.status == "already_applied":
             return f"Пакет уже применялся (<code>{self.idempotency_key}</code>)."
+        if self.status == "conflict":
+            msg = (self.message or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            return (
+                f"Конфликт ключа <code>{self.idempotency_key}</code>.\n"
+                f"{msg}"
+            )
         if self.status == "error":
             return f"Ошибка импорта: {self.message}"
         labels = {
@@ -140,6 +146,15 @@ class ImportEngine:
                 select(ImportEvent).where(ImportEvent.idempotency_key == packet.idempotency_key)
             )
             if existing is not None:
+                if existing.payload_hash and existing.payload_hash != payload_hash:
+                    return ImportReport(
+                        status="conflict",
+                        idempotency_key=packet.idempotency_key,
+                        message=(
+                            "idempotency_key уже использован с другим содержимым. "
+                            "Дайте новый idempotency_key."
+                        ),
+                    )
                 return ImportReport(
                     status="already_applied",
                     idempotency_key=packet.idempotency_key,
@@ -388,39 +403,31 @@ class ImportEngine:
 
         await session.flush()
 
-        # Recipe body: first create or explicit new_version → append version history
+        # Any ingredients payload → append a new recipe version (UI reads versions).
         if action.ingredients is not None:
-            has_versions = await session.scalar(
-                select(DishVersion.id).where(DishVersion.dish_id == entity.id).limit(1)
+            await self._add_version(
+                session,
+                dish=entity,
+                ingredients=action.ingredients,
+                title=None,
+                description=action.description,
+                cook_time_min=action.cook_time_min,
+                servings=action.servings,
+                instructions=action.instructions,
+                result_comment=action.result_comment,
+                kcal=action.kcal,
+                protein_g=action.protein_g,
+                fat_g=action.fat_g,
+                carbs_g=action.carbs_g,
+                set_current=True,
             )
-            should_version = created or action.new_version or not has_versions
-            if should_version:
-                await self._add_version(
-                    session,
-                    dish=entity,
-                    ingredients=action.ingredients,
-                    title=None,
-                    description=action.description,
-                    cook_time_min=action.cook_time_min,
-                    servings=action.servings,
-                    instructions=action.instructions,
-                    result_comment=action.result_comment,
-                    kcal=action.kcal,
-                    protein_g=action.protein_g,
-                    fat_g=action.fat_g,
-                    carbs_g=action.carbs_g,
-                    set_current=True,
-                )
-            else:
-                # Soft edit of identity-only dish.upsert without new_version:
-                # refresh current composition mirror without new history entry
-                await self._replace_dish_ingredients(session, entity.id, action.ingredients)
 
         await session.flush()
         return ActionResult(
             op=action.op,
             status="created" if created else "updated",
             id=entity.id,
+            detail="new_version" if (not created and action.ingredients is not None) else None,
         )
 
     async def _replace_dish_ingredients(

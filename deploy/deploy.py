@@ -106,7 +106,14 @@ def main() -> None:
         remote_cmd = (
             f"cd {REMOTE_DIR} && "
             "mkdir -p data && "
-            "rm -rf .venv && python3 -m venv .venv && "
+            # Backup SQLite before restart; keep last 10 backups
+            "ts=$(date +%Y%m%d-%H%M%S) && "
+            "for f in data/*.sqlite; do "
+            '  [ -f "$f" ] && cp "$f" "data/backup-$ts-$(basename "$f")"; '
+            "done && "
+            "ls -1t data/backup-*.sqlite 2>/dev/null | tail -n +11 | xargs -r rm -f && "
+            # Reuse venv when present
+            "if [ ! -d .venv ]; then python3 -m venv .venv; fi && "
             ".venv/bin/pip install -q -U pip && "
             ".venv/bin/pip install -q -r requirements.txt && "
             "sudo cp deploy/homemealcraft-bot.service /etc/systemd/system/homemealcraft-bot.service && "
