@@ -502,7 +502,6 @@ async def _send_catalog_list(
         "prep": 'Те же поля, что у блюд. JSON: dish.upsert + category "prep".',
         "deliv": "Где что заказывать — ссылки и заметки.",
         "stock": "Что есть дома. «Есть» в составе блюда тоже кладёт сюда.",
-        "shop": "«Добавить» — своя строка, без ингредиента и продукта.",
     }.get(kind, "Выберите позицию:")
 
     text = _page_header(kind, result) + "\n" + subtitle
@@ -550,8 +549,8 @@ async def _show_need_checklist(
     await _edit_or_answer(target, "\n".join(lines), markup=markup, edit=edit)
 
 
-@router.message(CommandStart())
-@router.message(F.text == BTN_HOME)
+@router.message(CommandStart(), StateFilter("*"))
+@router.message(F.text == BTN_HOME, StateFilter("*"))
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
@@ -580,8 +579,8 @@ def _extract_system_prompt_body(raw: str) -> str:
     return raw.strip() + "\n"
 
 
-@router.message(Command("help"))
-@router.message(F.text == BTN_HELP)
+@router.message(Command("help"), StateFilter("*"))
+@router.message(F.text == BTN_HELP, StateFilter("*"))
 async def cmd_help(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
@@ -618,8 +617,8 @@ async def cmd_prompt(message: Message) -> None:
     )
 
 
-@router.message(Command("ingredients"))
-@router.message(F.text == BTN_INGREDIENTS)
+@router.message(Command("ingredients"), StateFilter("*"))
+@router.message(F.text == BTN_INGREDIENTS, StateFilter("*"))
 async def cmd_ingredients(
     message: Message, catalog: CatalogService, state: FSMContext
 ) -> None:
@@ -627,8 +626,8 @@ async def cmd_ingredients(
     await _send_catalog_list(message, catalog, "ing", state=state)
 
 
-@router.message(Command("products"))
-@router.message(F.text == BTN_PRODUCTS)
+@router.message(Command("products"), StateFilter("*"))
+@router.message(F.text == BTN_PRODUCTS, StateFilter("*"))
 async def cmd_products(
     message: Message, catalog: CatalogService, state: FSMContext
 ) -> None:
@@ -636,8 +635,8 @@ async def cmd_products(
     await _send_catalog_list(message, catalog, "prod", state=state)
 
 
-@router.message(Command("dishes"))
-@router.message(F.text == BTN_DISHES)
+@router.message(Command("dishes"), StateFilter("*"))
+@router.message(F.text == BTN_DISHES, StateFilter("*"))
 async def cmd_dishes(
     message: Message, catalog: CatalogService, state: FSMContext
 ) -> None:
@@ -645,8 +644,8 @@ async def cmd_dishes(
     await _send_catalog_list(message, catalog, "dish", state=state)
 
 
-@router.message(Command("preps"))
-@router.message(F.text == BTN_PREPS)
+@router.message(Command("preps"), StateFilter("*"))
+@router.message(F.text == BTN_PREPS, StateFilter("*"))
 async def cmd_preps(
     message: Message, catalog: CatalogService, state: FSMContext
 ) -> None:
@@ -654,8 +653,8 @@ async def cmd_preps(
     await _send_catalog_list(message, catalog, "prep", state=state)
 
 
-@router.message(Command("deliveries"))
-@router.message(F.text == BTN_DELIVERIES)
+@router.message(Command("deliveries"), StateFilter("*"))
+@router.message(F.text == BTN_DELIVERIES, StateFilter("*"))
 async def cmd_deliveries(
     message: Message, catalog: CatalogService, state: FSMContext
 ) -> None:
@@ -663,8 +662,8 @@ async def cmd_deliveries(
     await _send_catalog_list(message, catalog, "deliv", state=state)
 
 
-@router.message(Command("stock"))
-@router.message(F.text == BTN_STOCK)
+@router.message(Command("stock"), StateFilter("*"))
+@router.message(F.text == BTN_STOCK, StateFilter("*"))
 async def cmd_stock(
     message: Message, catalog: CatalogService, state: FSMContext
 ) -> None:
@@ -672,8 +671,8 @@ async def cmd_stock(
     await _send_catalog_list(message, catalog, "stock", state=state)
 
 
-@router.message(Command("shopping"))
-@router.message(F.text == BTN_SHOPPING)
+@router.message(Command("shopping"), StateFilter("*"))
+@router.message(F.text == BTN_SHOPPING, StateFilter("*"))
 async def cmd_shopping(
     message: Message, catalog: CatalogService, state: FSMContext
 ) -> None:
@@ -1174,11 +1173,7 @@ async def on_shop_add(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(ShoppingDraft.waiting_name)
     await callback.answer()
     if isinstance(callback.message, Message):
-        await callback.message.answer(
-            "Напишите, что добавить в покупки.\n"
-            "Это только строка списка: ингредиент и продукт не создаются.\n"
-            "Отмена — кнопка раздела или /start."
-        )
+        await callback.message.answer("Напишите, что добавить в покупки.")
 
 
 @router.message(StateFilter(ShoppingDraft.waiting_name), F.text)
@@ -1198,8 +1193,7 @@ async def on_shop_add_name(
         return
     await catalog.add_shopping_by_name(text)
     await state.set_state(None)
-    await message.answer(f"В покупки: {_html(text)}")
-    await _send_catalog_list(message, catalog, "shop", state=state)
+    await message.answer("✅ Добавлено")
 
 
 @router.callback_query(F.data.startswith("shopok:"))
