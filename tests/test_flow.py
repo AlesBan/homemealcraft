@@ -61,7 +61,13 @@ async def run() -> None:
     )
     report = await engine.apply_packet(packet)
     assert report.status == "applied"
-    assert "id:" in report.summary_text()
+    summary = report.summary_text()
+    assert "Творог" in summary
+    assert "Мука" in summary
+    assert "Сырники" in summary
+    assert "Добавлено" in summary
+    assert "id:" not in summary
+    assert "<code>" not in summary
 
     conflict = ImportPacket.model_validate(
         {

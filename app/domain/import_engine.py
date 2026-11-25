@@ -88,6 +88,50 @@ class ActionResult:
     status: str
     id: str | None = None
     detail: str | None = None
+    title: str | None = None
+
+
+def _html(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _thing_title(name: str | None, extra: str | None = None) -> str:
+    base = " ".join((name or "").split()) or "без названия"
+    extra = " ".join((extra or "").split())
+    if extra and extra.casefold() not in base.casefold():
+        return f"{base} · {extra}"
+    return base
+
+
+def _version_title(dish_name: str, note: str | None = None) -> str:
+    base = " ".join(dish_name.split()) or "блюдо"
+    note = " ".join((note or "").split())
+    if len(note) > 48:
+        note = note[:47] + "…"
+    if note and note.casefold() != base.casefold():
+        return f"{base} — {note}"
+    return base
+
+
+_OP_GROUPS = {
+    "ingredient.upsert": "Ингредиенты",
+    "product.upsert": "Продукты",
+    "dish.upsert": "Блюда",
+    "delivery.upsert": "Доставки",
+    "stock.upsert": "Кладовая",
+    "stock.remove": "Кладовая",
+    "dish_version.create": "Версии рецептов",
+    "dish_version.delete": "Версии рецептов",
+    "shopping.add": "Покупки",
+    "shopping.check": "Покупки",
+    "shopping.remove": "Покупки",
+}
+
+_SECTIONS = (
+    ("created", "Добавлено"),
+    ("updated", "Обновлено"),
+    ("deleted", "Удалено"),
+)
 
 
 @dataclass
@@ -99,55 +143,54 @@ class ImportReport:
 
     def summary_text(self) -> str:
         if self.status == "already_applied":
-            return f"Пакет уже применялся (<code>{self.idempotency_key}</code>)."
+            return "Этот пакет уже применялся."
         if self.status == "conflict":
-            msg = (self.message or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            return (
-                f"Конфликт ключа <code>{self.idempotency_key}</code>.\n"
-                f"{msg}"
+            msg = _html(
+                (self.message or "Такой пакет уже приходил с другим содержимым.").strip()
             )
+            return f"Пакет не применён.\n{msg}"
         if self.status == "error":
-            return f"Ошибка импорта: {self.message}"
-        labels = {
-            "ingredient.upsert": "ингредиенты",
-            "product.upsert": "продукты",
-            "dish.upsert": "блюда",
-            "delivery.upsert": "доставки",
-            "stock.upsert": "кладовая",
-            "stock.remove": "убрано из кладовой",
-            "dish_version.create": "версии рецептов",
-            "dish_version.delete": "удалены версии",
-            "shopping.add": "покупки",
-            "shopping.check": "отмечено купленным",
-            "shopping.remove": "удалено из покупок",
-        }
-        created: dict[str, int] = {}
-        updated: dict[str, int] = {}
-        other: dict[str, int] = {}
+            return f"Ошибка импорта: {_html(self.message or '')}"
+
+        rows: list[tuple[str, str, str]] = []
         for item in self.results:
-            bucket = (
-                created
-                if item.status == "created"
-                else updated
-                if item.status == "updated"
-                else other
-            )
-            name = labels.get(item.op, item.op)
-            bucket[name] = bucket.get(name, 0) + 1
-        lines = ["Готово."]
-        if created:
-            lines.append("Добавлено: " + ", ".join(f"{k} ×{v}" for k, v in created.items()))
-        if updated:
-            lines.append("Обновлено: " + ", ".join(f"{k} ×{v}" for k, v in updated.items()))
+            group = _OP_GROUPS.get(item.op, item.op)
+            title = item.title or "без названия"
+            rows.append((item.status, group, title))
+            if item.detail == "new_version":
+                rows.append(("created", "Версии рецептов", title))
+
+        lines = ["<b>Готово.</b>"]
+        known = {status for status, _heading in _SECTIONS}
+        any_rows = False
+        for status, heading in _SECTIONS:
+            section = [(group, title) for row_status, group, title in rows if row_status == status]
+            if not section:
+                continue
+            any_rows = True
+            lines.append("")
+            lines.append(f"<b>{heading}</b>")
+            grouped: dict[str, list[str]] = {}
+            for group, title in section:
+                grouped.setdefault(group, []).append(title)
+            for group, titles in grouped.items():
+                lines.append(group)
+                for title in titles:
+                    lines.append(f"· {_html(title)}")
+        other = [
+            (group, title)
+            for row_status, group, title in rows
+            if row_status not in known
+        ]
         if other:
-            lines.append("Ещё: " + ", ".join(f"{k} ×{v}" for k, v in other.items()))
-        ids = [r.id for r in self.results if r.id and r.status in {"created", "updated"}]
-        if ids:
-            # Keep Telegram message short: first few ids for agent follow-ups
-            shown = ids[:8]
-            lines.append("id: " + ", ".join(f"<code>{i}</code>" for i in shown))
-            if len(ids) > 8:
-                lines.append(f"…и ещё {len(ids) - 8}")
+            any_rows = True
+            lines.append("")
+            lines.append("<b>Ещё</b>")
+            for group, title in other:
+                lines.append(f"· {_html(title)}")
+                lines.append(group)
+        if not any_rows:
+            lines.append("Изменений нет.")
         return "\n".join(lines)
 
 
@@ -170,8 +213,8 @@ class ImportEngine:
                         status="conflict",
                         idempotency_key=packet.idempotency_key,
                         message=(
-                            "idempotency_key уже использован с другим содержимым. "
-                            "Дайте новый idempotency_key."
+                            "Такой пакет уже приходил с другим содержимым. "
+                            "Нужен новый JSON."
                         ),
                     )
                 return ImportReport(
@@ -295,11 +338,11 @@ class ImportEngine:
             entity = Ingredient(id=action.id or _new_id(), **{k: v for k, v in payload.items()})
             session.add(entity)
             await session.flush()
-            return ActionResult(op=action.op, status="created", id=entity.id)
+            return ActionResult(op=action.op, status="created", id=entity.id, title=entity.name)
 
         _patch(entity, payload, action.clear_fields)
         await session.flush()
-        return ActionResult(op=action.op, status="updated", id=entity.id)
+        return ActionResult(op=action.op, status="updated", id=entity.id, title=entity.name)
 
     async def _upsert_product(self, session: AsyncSession, action: ProductUpsert) -> ActionResult:
         entity: Product | None = None
@@ -376,7 +419,12 @@ class ImportEngine:
             )
             session.add(entity)
             await session.flush()
-            return ActionResult(op=action.op, status="created", id=entity.id)
+            return ActionResult(
+                op=action.op,
+                status="created",
+                id=entity.id,
+                title=_thing_title(entity.name, entity.brand),
+            )
 
         # For patch: only set ingredient_id when provided
         patch_data = dict(payload)
@@ -384,7 +432,12 @@ class ImportEngine:
             patch_data.pop("ingredient_id", None)
         _patch(entity, patch_data, action.clear_fields)
         await session.flush()
-        return ActionResult(op=action.op, status="updated", id=entity.id)
+        return ActionResult(
+            op=action.op,
+            status="updated",
+            id=entity.id,
+            title=_thing_title(entity.name, entity.brand),
+        )
 
     async def _upsert_dish(self, session: AsyncSession, action: DishUpsert) -> ActionResult:
         # Match by id; if no id — by normalized name (case-insensitive)
@@ -450,6 +503,7 @@ class ImportEngine:
             op=action.op,
             status="created" if created else "updated",
             id=entity.id,
+            title=entity.name,
             detail="new_version" if (not created and action.ingredients is not None) else None,
         )
 
@@ -577,7 +631,12 @@ class ImportEngine:
             set_current=action.set_current,
             version_id=action.id,
         )
-        return ActionResult(op=action.op, status="created", id=version.id)
+        return ActionResult(
+            op=action.op,
+            status="created",
+            id=version.id,
+            title=_version_title(dish.name, action.title or action.result_comment),
+        )
 
     async def _delete_dish_version(
         self, session: AsyncSession, action: DishVersionDelete
@@ -602,7 +661,12 @@ class ImportEngine:
                     dish.current_version_id = latest.id
                 else:
                     dish.current_version_id = None
-            return ActionResult(op=action.op, status="deleted", id=action.version_id)
+            return ActionResult(
+                op=action.op,
+                status="deleted",
+                id=action.version_id,
+                title=dish.name if dish else "версия",
+            )
 
         dish = await session.scalar(
             select(Dish).where(Dish.name == (action.dish_name or "").strip())
@@ -623,6 +687,7 @@ class ImportEngine:
             op=action.op,
             status="deleted",
             id=dish.id,
+            title=dish.name,
             detail=f"removed {deleted} old versions",
         )
 
@@ -652,11 +717,11 @@ class ImportEngine:
             for key, value in payload.items():
                 setattr(entity, key, value)
             await session.flush()
-            return ActionResult(op=action.op, status="created", id=entity.id)
+            return ActionResult(op=action.op, status="created", id=entity.id, title=entity.name)
 
         _patch(entity, payload, action.clear_fields)
         await session.flush()
-        return ActionResult(op=action.op, status="updated", id=entity.id)
+        return ActionResult(op=action.op, status="updated", id=entity.id, title=entity.name)
 
     async def _find_stock(
         self,
@@ -746,11 +811,11 @@ class ImportEngine:
                 if value is not None or key in {"name", "ingredient_id"}:
                     setattr(entity, key, value)
             await session.flush()
-            return ActionResult(op=action.op, status="created", id=entity.id)
+            return ActionResult(op=action.op, status="created", id=entity.id, title=entity.name)
 
         _patch(entity, payload, action.clear_fields)
         await session.flush()
-        return ActionResult(op=action.op, status="updated", id=entity.id)
+        return ActionResult(op=action.op, status="updated", id=entity.id, title=entity.name)
 
     async def _remove_stock(self, session: AsyncSession, action: StockRemove) -> ActionResult:
         entity = await self._find_stock(
@@ -763,9 +828,10 @@ class ImportEngine:
         if entity is None:
             raise ValueError("stock item not found")
         item_id = entity.id
+        title = entity.name
         await session.delete(entity)
         await session.flush()
-        return ActionResult(op=action.op, status="deleted", id=item_id)
+        return ActionResult(op=action.op, status="deleted", id=item_id, title=title)
 
     async def _shopping_add(self, session: AsyncSession, action: ShoppingAdd) -> ActionResult:
         name = action.name
@@ -805,7 +871,7 @@ class ImportEngine:
         )
         session.add(item)
         await session.flush()
-        return ActionResult(op=action.op, status="created", id=item.id)
+        return ActionResult(op=action.op, status="created", id=item.id, title=item.name)
 
     async def _find_shopping(
         self, session: AsyncSession, *, shopping_id: str | None, product_id: str | None, name: str | None
@@ -837,7 +903,7 @@ class ImportEngine:
             raise ValueError("shopping item not found")
         item.is_bought = True
         await session.flush()
-        return ActionResult(op=action.op, status="updated", id=item.id)
+        return ActionResult(op=action.op, status="updated", id=item.id, title=item.name)
 
     async def _shopping_remove(self, session: AsyncSession, action: ShoppingRemove) -> ActionResult:
         item = await self._find_shopping(
@@ -849,6 +915,7 @@ class ImportEngine:
         if item is None:
             raise ValueError("shopping item not found")
         item_id = item.id
+        title = item.name
         await session.delete(item)
         await session.flush()
-        return ActionResult(op=action.op, status="deleted", id=item_id)
+        return ActionResult(op=action.op, status="deleted", id=item_id, title=title)
