@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Any
+from typing import Annotated, Any
 
 from pydantic import field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -15,7 +15,8 @@ class Settings(BaseSettings):
     )
 
     telegram_bot_token: str
-    telegram_user_ids: list[int] = []
+    # Comma-separated in .env. NoDecode keeps "1,2" from being parsed as JSON.
+    telegram_user_ids: Annotated[list[int], NoDecode] = []
     timezone: str = "Europe/Minsk"
     database_path: str = "data/homemealcraft.sqlite"
     api_token: str = ""
