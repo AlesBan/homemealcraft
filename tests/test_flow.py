@@ -94,7 +94,77 @@ async def run() -> None:
     stats = await catalog.deduct_dish_from_stock(dish.id)
     assert stats["deducted"] + stats["depleted"] + stats["missing"] >= 1
 
+    names_before = {i.name for i in (await catalog.list_ingredients()).items}
+    assert "Творог" in names_before and "Мука" in names_before
     assert await catalog.delete_dish(dish.id) is True
+    names_after = {i.name for i in (await catalog.list_ingredients()).items}
+    assert names_before <= names_after
+
+    removed = await engine.apply_packet(
+        ImportPacket.model_validate(
+            {
+                "schema_version": "1.0",
+                "idempotency_key": "test-flow-del-tvorog",
+                "source": "test",
+                "actions": [{"op": "ingredient.delete", "name": "Творог"}],
+            }
+        )
+    )
+    assert removed.status == "applied"
+    assert "Удалено" in removed.summary_text()
+    assert "Творог" in removed.summary_text()
+    left = {i.name for i in (await catalog.list_ingredients()).items}
+    assert "Творог" not in left
+    assert "Мука" in left
+
+    packed = await engine.apply_packet(
+        ImportPacket.model_validate(
+            {
+                "schema_version": "1.0",
+                "idempotency_key": "test-flow-product-del",
+                "source": "test",
+                "actions": [
+                    {"op": "ingredient.upsert", "name": "Йогурт", "category": "dairy"},
+                    {
+                        "op": "product.upsert",
+                        "name": "Йогурт Teos",
+                        "brand": "Teos",
+                        "ingredient_name": "Йогурт",
+                    },
+                    {
+                        "op": "dish.upsert",
+                        "name": "Миска йогурта",
+                        "category": "breakfast",
+                        "ingredients": [
+                            {"ingredient_name": "Йогурт", "amount": 150, "unit": "g"},
+                            {"ingredient_name": "Мука", "amount": 10, "unit": "g"},
+                        ],
+                    },
+                ],
+            }
+        )
+    )
+    assert packed.status == "applied"
+    gone_dish = await engine.apply_packet(
+        ImportPacket.model_validate(
+            {
+                "schema_version": "1.0",
+                "idempotency_key": "test-flow-del-dish",
+                "source": "test",
+                "actions": [{"op": "dish.delete", "name": "Миска йогурта"}],
+            }
+        )
+    )
+    assert gone_dish.status == "applied"
+    dishes_left = await catalog.list_dishes(q="Миска йогурта")
+    assert dishes_left.total == 0
+    still = {i.name for i in (await catalog.list_ingredients()).items}
+    assert "Йогурт" in still and "Мука" in still
+    products = await catalog.list_products(q="Teos")
+    assert products.total == 1
+    assert await catalog.delete_product(products.items[0].id) is True
+    assert (await catalog.list_products(q="Teos")).total == 0
+    assert "Йогурт" in {i.name for i in (await catalog.list_ingredients()).items}
     print("test_flow OK")
 
 

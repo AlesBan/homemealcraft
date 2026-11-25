@@ -36,6 +36,7 @@ from bot.keyboards import (
     need_checklist_keyboard,
     confirm_keyboard,
     delivery_card_keyboard,
+    ingredient_card_keyboard,
     product_card_keyboard,
     shopping_card_keyboard,
     stock_card_keyboard,
@@ -778,9 +779,34 @@ async def on_ingredient(callback: CallbackQuery, catalog: CatalogService) -> Non
     await _edit_or_answer(
         callback.message,
         _format_ingredient(item),
-        markup=back_to_list_keyboard("ing"),
+        markup=ingredient_card_keyboard(item.id),
         edit=True,
     )
+
+
+@router.callback_query(F.data.startswith("ingdel:"))
+async def on_ingredient_delete_ask(callback: CallbackQuery) -> None:
+    item_id = (callback.data or "")[7:]
+    if not isinstance(callback.message, Message):
+        await callback.answer()
+        return
+    await callback.answer()
+    await callback.message.edit_reply_markup(
+        reply_markup=confirm_keyboard(f"ingok:{item_id}", f"ing:{item_id}")
+    )
+
+
+@router.callback_query(F.data.startswith("ingok:"))
+async def on_ingredient_delete_ok(
+    callback: CallbackQuery, catalog: CatalogService, state: FSMContext
+) -> None:
+    item_id = (callback.data or "")[6:]
+    ok = await catalog.delete_ingredient(item_id)
+    await callback.answer("Удалено" if ok else "Уже нет")
+    if isinstance(callback.message, Message):
+        await _send_catalog_list(
+            callback.message, catalog, "ing", edit=True, state=state
+        )
 
 
 @router.callback_query(F.data.startswith("prod:"))

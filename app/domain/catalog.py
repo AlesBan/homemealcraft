@@ -35,6 +35,54 @@ class PageResult:
         return max(1, (self.total + self.page_size - 1) // self.page_size)
 
 
+async def delete_dish_row(session: AsyncSession, dish: Dish) -> None:
+    """Drop a dish, its versions and composition lines. Ingredients stay."""
+    loaded = await session.scalar(
+        select(Dish)
+        .where(Dish.id == dish.id)
+        .options(selectinload(Dish.versions).selectinload(DishVersion.ingredients))
+    )
+    if loaded is None:
+        return
+    await session.delete(loaded)
+
+
+async def delete_ingredient_row(session: AsyncSession, ingredient: Ingredient) -> None:
+    """Drop the type. Recipe lines lose this row; dishes, products, stock and shopping remain."""
+    ingredient_id = ingredient.id
+    links = list(
+        await session.scalars(
+            select(DishVersionIngredient).where(
+                DishVersionIngredient.ingredient_id == ingredient_id
+            )
+        )
+    )
+    for link in links:
+        await session.delete(link)
+    for product in await session.scalars(
+        select(Product).where(Product.ingredient_id == ingredient_id)
+    ):
+        product.ingredient_id = None
+    for item in await session.scalars(
+        select(ShoppingItem).where(ShoppingItem.ingredient_id == ingredient_id)
+    ):
+        item.ingredient_id = None
+    for item in await session.scalars(
+        select(StockItem).where(StockItem.ingredient_id == ingredient_id)
+    ):
+        item.ingredient_id = None
+    await session.delete(ingredient)
+
+
+async def delete_product_row(session: AsyncSession, product: Product) -> None:
+    """Drop the package. Shopping rows and the ingredient type stay."""
+    for item in await session.scalars(
+        select(ShoppingItem).where(ShoppingItem.product_id == product.id)
+    ):
+        item.product_id = None
+    await session.delete(product)
+
+
 class CatalogService:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
@@ -366,20 +414,32 @@ class CatalogService:
             return True, dish_id
 
     async def delete_dish(self, dish_id: str) -> bool:
+        """Remove the dish and its recipe versions only. Ingredients stay."""
         async with self._session_factory() as session:
             dish = await session.get(Dish, dish_id)
             if dish is None:
                 return False
-            await session.delete(dish)
+            await delete_dish_row(session, dish)
+            await session.commit()
+            return True
+
+    async def delete_ingredient(self, ingredient_id: str) -> bool:
+        """Remove the ingredient type only. Dishes, products, stock and shopping stay."""
+        async with self._session_factory() as session:
+            item = await session.get(Ingredient, ingredient_id)
+            if item is None:
+                return False
+            await delete_ingredient_row(session, item)
             await session.commit()
             return True
 
     async def delete_product(self, product_id: str) -> bool:
+        """Remove the packaged product only. The ingredient type stays."""
         async with self._session_factory() as session:
             item = await session.get(Product, product_id)
             if item is None:
                 return False
-            await session.delete(item)
+            await delete_product_row(session, item)
             await session.commit()
             return True
 

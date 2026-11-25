@@ -122,6 +122,35 @@ class DishVersionDelete(BaseModel):
         raise ValueError("version_id or (dish_name + keep_current_only) required")
 
 
+class IngredientDelete(BaseModel):
+    op: Literal["ingredient.delete"] = "ingredient.delete"
+    name: str
+
+
+class ProductDelete(BaseModel):
+    op: Literal["product.delete"] = "product.delete"
+    name: str | None = None
+    barcode: str | None = None
+
+    @model_validator(mode="after")
+    def require_ref(self) -> ProductDelete:
+        if not (self.name and self.name.strip()) and not (self.barcode and self.barcode.strip()):
+            raise ValueError("name or barcode is required")
+        return self
+
+
+class DishDelete(BaseModel):
+    """Removes the dish or prep only. Ingredients are kept."""
+
+    op: Literal["dish.delete"] = "dish.delete"
+    name: str
+
+
+class DeliveryDelete(BaseModel):
+    op: Literal["delivery.delete"] = "delivery.delete"
+    name: str
+
+
 class DeliveryUpsert(BaseModel):
     """Bookmark: where / what to order (link and/or text) + comments."""
 
@@ -207,6 +236,10 @@ Action = (
     | DishVersionCreate
     | DishVersionDelete
     | DeliveryUpsert
+    | IngredientDelete
+    | ProductDelete
+    | DishDelete
+    | DeliveryDelete
     | ShoppingAdd
     | ShoppingCheck
     | ShoppingRemove
@@ -224,6 +257,10 @@ _ACTION_BY_OP: dict[str, type[BaseModel]] = {
     "shopping.add": ShoppingAdd,
     "shopping.check": ShoppingCheck,
     "shopping.remove": ShoppingRemove,
+    "ingredient.delete": IngredientDelete,
+    "product.delete": ProductDelete,
+    "dish.delete": DishDelete,
+    "delivery.delete": DeliveryDelete,
     "stock.upsert": StockUpsert,
     "stock.remove": StockRemove,
 }

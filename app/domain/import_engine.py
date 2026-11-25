@@ -13,6 +13,7 @@ log = logging.getLogger("homemealcraft")
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.domain.catalog import delete_dish_row, delete_ingredient_row, delete_product_row
 from app.db.models import (
     Delivery,
     Dish,
@@ -25,11 +26,15 @@ from app.db.models import (
     StockItem,
 )
 from app.domain.schemas import (
+    DeliveryDelete,
     DeliveryUpsert,
+    DishDelete,
     DishIngredientLine,
     DishUpsert,
     DishVersionCreate,
     DishVersionDelete,
+    IngredientDelete,
+    ProductDelete,
     ImportPacket,
     IngredientUpsert,
     ProductUpsert,
@@ -118,6 +123,10 @@ _OP_GROUPS = {
     "product.upsert": "Продукты",
     "dish.upsert": "Блюда",
     "delivery.upsert": "Доставки",
+    "ingredient.delete": "Ингредиенты",
+    "product.delete": "Продукты",
+    "dish.delete": "Блюда",
+    "delivery.delete": "Доставки",
     "stock.upsert": "Кладовая",
     "stock.remove": "Кладовая",
     "dish_version.create": "Версии рецептов",
@@ -236,6 +245,14 @@ class ImportEngine:
                         results.append(await self._create_dish_version(session, action))
                     elif isinstance(action, DishVersionDelete):
                         results.append(await self._delete_dish_version(session, action))
+                    elif isinstance(action, IngredientDelete):
+                        results.append(await self._delete_ingredient(session, action))
+                    elif isinstance(action, ProductDelete):
+                        results.append(await self._delete_product(session, action))
+                    elif isinstance(action, DishDelete):
+                        results.append(await self._delete_dish(session, action))
+                    elif isinstance(action, DeliveryDelete):
+                        results.append(await self._delete_delivery(session, action))
                     elif isinstance(action, DeliveryUpsert):
                         results.append(await self._upsert_delivery(session, action))
                     elif isinstance(action, StockUpsert):
@@ -310,6 +327,61 @@ class ImportEngine:
                 log.info("created ingredient type name=%s category=%s", name, ing.category)
                 return ing
         return None
+
+    async def _delete_ingredient(
+        self, session: AsyncSession, action: IngredientDelete
+    ) -> ActionResult:
+        raw = normalize_type_name(action.name)
+        name = canonical_type_name(raw) or raw
+        entity = await session.scalar(select(Ingredient).where(Ingredient.name.ilike(name)))
+        if entity is None:
+            raise ValueError(f"ингредиент не найден: {name}")
+        title = entity.name
+        await delete_ingredient_row(session, entity)
+        await session.flush()
+        return ActionResult(op=action.op, status="deleted", id=None, title=title)
+
+    async def _delete_product(
+        self, session: AsyncSession, action: ProductDelete
+    ) -> ActionResult:
+        entity: Product | None = None
+        if action.barcode:
+            entity = await session.scalar(
+                select(Product).where(Product.barcode == action.barcode.strip())
+            )
+        if entity is None and action.name:
+            entity = await session.scalar(
+                select(Product).where(Product.name.ilike(normalize_entity_name(action.name)))
+            )
+        if entity is None:
+            label = action.name or action.barcode or ""
+            raise ValueError(f"продукт не найден: {label}")
+        title = _thing_title(entity.name, entity.brand)
+        await delete_product_row(session, entity)
+        await session.flush()
+        return ActionResult(op=action.op, status="deleted", id=None, title=title)
+
+    async def _delete_dish(self, session: AsyncSession, action: DishDelete) -> ActionResult:
+        name = normalize_entity_name(action.name)
+        entity = await session.scalar(select(Dish).where(Dish.name.ilike(name)))
+        if entity is None:
+            raise ValueError(f"блюдо не найдено: {name}")
+        title = entity.name
+        await delete_dish_row(session, entity)
+        await session.flush()
+        return ActionResult(op=action.op, status="deleted", id=None, title=title)
+
+    async def _delete_delivery(
+        self, session: AsyncSession, action: DeliveryDelete
+    ) -> ActionResult:
+        name = normalize_entity_name(action.name)
+        entity = await session.scalar(select(Delivery).where(Delivery.name.ilike(name)))
+        if entity is None:
+            raise ValueError(f"доставка не найдена: {name}")
+        title = entity.name
+        await session.delete(entity)
+        await session.flush()
+        return ActionResult(op=action.op, status="deleted", id=None, title=title)
 
     async def _upsert_ingredient(
         self, session: AsyncSession, action: IngredientUpsert

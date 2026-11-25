@@ -285,6 +285,20 @@ def stock_card_keyboard(item_id: str, *, is_opened: bool = False) -> InlineKeybo
     )
 
 
+def ingredient_card_keyboard(item_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🗑 Удалить ингредиент",
+                    callback_data=f"ingdel:{item_id}",
+                )
+            ],
+            [InlineKeyboardButton(text="← К ингредиентам", callback_data="list:ing")],
+        ]
+    )
+
+
 def product_card_keyboard(item_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
