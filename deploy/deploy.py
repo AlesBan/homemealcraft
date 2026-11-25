@@ -111,8 +111,10 @@ def main() -> None:
             # Backup SQLite before restart; keep last 10 backups
             "ts=$(date +%Y%m%d-%H%M%S) && "
             "for f in data/*.sqlite; do "
-            '  [ -f "$f" ] && cp "$f" "data/backup-$ts-$(basename "$f")"; '
-            "done && "
+            '  base=$(basename "$f"); '
+            '  case "$base" in backup-*) continue ;; esac; '
+            '  [ -f "$f" ] && cp "$f" "data/backup-$ts-$base"; '
+            "done; "
             "ls -1t data/backup-*.sqlite 2>/dev/null | tail -n +11 | xargs -r rm -f && "
             # Reuse venv when present
             "if [ ! -d .venv ]; then python3 -m venv .venv; fi && "
