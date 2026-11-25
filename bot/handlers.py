@@ -350,24 +350,20 @@ async def _edit_or_answer(
     *,
     markup=None,
     edit: bool = False,
-    refresh_keyboard: bool = False,
 ) -> None:
+    """Show text, optionally with an inline keyboard.
+
+    Reply keyboard and inline buttons cannot share one message. Telegram
+    rejects editReplyMarkup that tries to swap a reply keyboard for an inline
+    list, so a new screen is sent with the inline keyboard only. The reply
+    keyboard already on screen stays until a later message replaces it.
+    """
     if edit:
         try:
             await target.edit_text(text, reply_markup=markup)
             return
         except Exception:  # noqa: BLE001
-            pass
-    if refresh_keyboard:
-        # Reply keyboard and inline buttons cannot share one markup.
-        # Send the new reply keyboard, then attach the inline list.
-        sent = await target.answer(text, reply_markup=main_keyboard())
-        if markup is not None:
-            try:
-                await sent.edit_reply_markup(reply_markup=markup)
-            except Exception:  # noqa: BLE001
-                log.debug("inline markup after keyboard refresh failed", exc_info=True)
-        return
+            log.debug("edit failed, sending a new message", exc_info=True)
     await target.answer(text, reply_markup=markup)
 
 
@@ -491,14 +487,7 @@ async def _send_catalog_list(
     if not result.items:
         text = _empty_list_text(kind, q)
         markup = catalog_list_keyboard(kind, [], page=0, pages=1, query=q)
-        if q:
-            await _edit_or_answer(
-                target, text, markup=markup, edit=edit, refresh_keyboard=not edit
-            )
-        else:
-            await _edit_or_answer(
-                target, text, edit=edit, refresh_keyboard=not edit
-            )
+        await _edit_or_answer(target, text, markup=markup, edit=edit)
         return
 
     subtitle = {
@@ -517,9 +506,7 @@ async def _send_catalog_list(
         pages=result.pages,
         query=result.query,
     )
-    await _edit_or_answer(
-        target, text, markup=markup, edit=edit, refresh_keyboard=not edit
-    )
+    await _edit_or_answer(target, text, markup=markup, edit=edit)
 
 
 async def _show_need_checklist(
