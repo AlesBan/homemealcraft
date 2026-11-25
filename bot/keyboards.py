@@ -50,6 +50,7 @@ def main_keyboard() -> ReplyKeyboardMarkup:
             ],
         ],
         resize_keyboard=True,
+        is_persistent=True,
     )
 
 
