@@ -165,6 +165,14 @@ async def run() -> None:
     assert await catalog.delete_product(products.items[0].id) is True
     assert (await catalog.list_products(q="Teos")).total == 0
     assert "Йогурт" in {i.name for i in (await catalog.list_ingredients()).items}
+
+    names = {i.name for i in (await catalog.list_ingredients()).items}
+    custom = await catalog.add_shopping_by_name("Губки")
+    assert custom.ingredient_id is None and custom.product_id is None
+    assert {i.name for i in (await catalog.list_ingredients()).items} == names
+    assert (await catalog.list_products(q="Губки")).total == 0
+    assert await catalog.mark_shopping_bought(custom.id, to_stock=False)
+    assert (await catalog.list_stock(q="Губки")).total == 0
     print("test_flow OK")
 
 

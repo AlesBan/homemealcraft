@@ -117,6 +117,10 @@ class NeedCheck(StatesGroup):
     active = State()
 
 
+class ShoppingDraft(StatesGroup):
+    waiting_name = State()
+
+
 def _nutrition_line(kcal, protein, fat, carbs) -> str:
     if all(v is None for v in (kcal, protein, fat, carbs)):
         return "БЖУ на 100 г: не указано"
@@ -287,7 +291,7 @@ def _version_button_label(version: DishVersion) -> str:
 
 def _format_shopping(item: ShoppingItem) -> str:
     mark = "куплено" if item.is_bought else "нужно купить"
-    lines = [f"<b>{item.name}</b>", f"Статус: {mark}"]
+    lines = [f"<b>{_html(item.name)}</b>", f"Статус: {mark}"]
     shelf = _shelf_ru(item.category) if item.category else None
     if shelf:
         lines.append(f"Категория: {shelf}")
@@ -300,6 +304,8 @@ def _format_shopping(item: ShoppingItem) -> str:
         lines.append(f"Продукт: {item.product.name}{brand}")
         if item.product.ingredient and not item.ingredient:
             lines.append(f"Вид: {item.product.ingredient.name}")
+    if not item.ingredient_id and not item.product_id:
+        lines.append("Своя покупка: только список")
     return "\n".join(lines)
 
 
@@ -365,7 +371,7 @@ async def _edit_or_answer(
             return
         except Exception:  # noqa: BLE001
             log.debug("edit failed, sending a new message", exc_info=True)
-    await target.answer(text, reply_markup=markup)
+    await target.answer(text, reply_markup=markup if markup is not None else main_keyboard())
 
 
 async def _show_dish_card(
@@ -496,7 +502,7 @@ async def _send_catalog_list(
         "prep": 'Те же поля, что у блюд. JSON: dish.upsert + category "prep".',
         "deliv": "Где что заказывать — ссылки и заметки.",
         "stock": "Что есть дома. «Есть» в составе блюда тоже кладёт сюда.",
-        "shop": "Отметьте купленное или удалите позицию.",
+        "shop": "«Добавить» — своя строка, без ингредиента и продукта.",
     }.get(kind, "Выберите позицию:")
 
     text = _page_header(kind, result) + "\n" + subtitle
@@ -1150,12 +1156,50 @@ async def on_shopping(callback: CallbackQuery, catalog: CatalogService) -> None:
         await callback.answer("Не найдено", show_alert=True)
         return
     await callback.answer()
+    linked = bool(item.ingredient_id or item.product_id)
     await _edit_or_answer(
         callback.message,
         _format_shopping(item),
-        markup=shopping_card_keyboard(item.id),
+        markup=shopping_card_keyboard(item.id, to_stock=linked),
         edit=True,
     )
+
+
+def _html(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+@router.callback_query(F.data == "shopadd")
+async def on_shop_add(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(ShoppingDraft.waiting_name)
+    await callback.answer()
+    if isinstance(callback.message, Message):
+        await callback.message.answer(
+            "Напишите, что добавить в покупки.\n"
+            "Это только строка списка: ингредиент и продукт не создаются.\n"
+            "Отмена — кнопка раздела или /start."
+        )
+
+
+@router.message(StateFilter(ShoppingDraft.waiting_name), F.text)
+async def on_shop_add_name(
+    message: Message, catalog: CatalogService, state: FSMContext, import_engine: ImportEngine
+) -> None:
+    text = (message.text or "").strip()
+    if not text or text.startswith("/") or text in MENU_TEXTS:
+        await state.clear()
+        return
+    if text.startswith("{") or text.startswith("```") or "schema_version" in text:
+        await state.clear()
+        await _apply_json_text(message, text, import_engine)
+        return
+    if len(text) > 255:
+        await message.answer("Слишком длинное название. До 255 символов.")
+        return
+    await catalog.add_shopping_by_name(text)
+    await state.set_state(None)
+    await message.answer(f"В покупки: {_html(text)}")
+    await _send_catalog_list(message, catalog, "shop", state=state)
 
 
 @router.callback_query(F.data.startswith("shopok:"))
@@ -1163,11 +1207,13 @@ async def on_shopping_ok(
     callback: CallbackQuery, catalog: CatalogService, state: FSMContext
 ) -> None:
     item_id = (callback.data or "")[7:]
-    ok = await catalog.mark_shopping_bought(item_id, to_stock=True)
+    item = await catalog.get_shopping(item_id)
+    to_stock = bool(item and (item.ingredient_id or item.product_id))
+    ok = await catalog.mark_shopping_bought(item_id, to_stock=to_stock)
     if not ok:
         await callback.answer("Уже нет", show_alert=True)
         return
-    await callback.answer("Куплено → кладовая")
+    await callback.answer("Куплено → кладовая" if to_stock else "Куплено")
     if isinstance(callback.message, Message):
         await _send_catalog_list(
             callback.message, catalog, "shop", edit=True, state=state

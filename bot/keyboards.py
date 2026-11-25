@@ -97,6 +97,10 @@ def catalog_list_keyboard(
             InlineKeyboardButton(text="Сбросить", callback_data=f"clearq:{kind}")
         )
     rows.append(search_row)
+    if kind == "shop":
+        rows.append(
+            [InlineKeyboardButton(text="＋ Добавить", callback_data="shopadd")]
+        )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -246,12 +250,13 @@ def need_checklist_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def shopping_card_keyboard(item_id: str) -> InlineKeyboardMarkup:
+def shopping_card_keyboard(item_id: str, *, to_stock: bool = True) -> InlineKeyboardMarkup:
+    bought = "✓ Куплено → кладовая" if to_stock else "✓ Куплено"
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="✓ Куплено → кладовая",
+                    text=bought,
                     callback_data=f"shopok:{item_id}",
                 ),
                 InlineKeyboardButton(
