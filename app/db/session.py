@@ -164,6 +164,22 @@ def _ensure_extra_columns(connection) -> None:
             connection.execute(text("ALTER TABLE stock_items ADD COLUMN expires_on DATE"))
 
 
+def _ensure_dish_is_prep(connection) -> None:
+    cols = _columns(connection, "dishes")
+    if not cols:
+        return
+    if "is_prep" not in cols:
+        connection.execute(
+            text("ALTER TABLE dishes ADD COLUMN is_prep BOOLEAN NOT NULL DEFAULT 0")
+        )
+    connection.execute(
+        text(
+            "UPDATE dishes SET is_prep = 1 "
+            "WHERE lower(coalesce(category, '')) = 'prep' AND coalesce(is_prep, 0) = 0"
+        )
+    )
+
+
 def _run_schema_upgrades(connection) -> None:
     """Lightweight migration path (Alembic-compatible stamped revisions in schema_meta)."""
     connection.execute(
@@ -191,6 +207,7 @@ def _run_schema_upgrades(connection) -> None:
             _drop_dish_ingredients(c),
         )),
         ("2026_11_22_stock_shopping_cols", lambda c: _ensure_extra_columns(c)),
+        ("2026_11_27_dish_is_prep", lambda c: _ensure_dish_is_prep(c)),
     ]
     for version, fn in steps:
         if version in applied:

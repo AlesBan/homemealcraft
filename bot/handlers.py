@@ -226,11 +226,25 @@ def _pick_version(dish: Dish, version_id: str | None = None) -> DishVersion | No
     return versions[0]
 
 
+def _in_preps(dish: Dish) -> bool:
+    return bool(dish.is_prep) or (dish.category or "") == PREP_CATEGORY
+
+
+def _in_dishes(dish: Dish) -> bool:
+    return (dish.category or "") != PREP_CATEGORY
+
+
 def _format_dish_card(dish: Dish, version: DishVersion | None = None) -> str:
     cat = DISH_CATEGORY_RU.get(dish.category or "", dish.category)
+    in_dishes = _in_dishes(dish)
+    in_preps = _in_preps(dish)
     lines = [f"<b>{dish.name}</b>"]
-    if cat:
+    if in_dishes and in_preps:
+        lines.append("Разделы: блюда и заготовки")
+    if cat and (dish.category or "") != PREP_CATEGORY:
         lines.append(f"Категория: {cat}")
+    elif in_preps and not in_dishes:
+        lines.append("Категория: Заготовки")
     if dish.freezable is True:
         lines.append("Заморозка: да")
     elif dish.freezable is False:
@@ -270,13 +284,20 @@ def _format_dish_card(dish: Dish, version: DishVersion | None = None) -> str:
 
     if versions:
         lines.append("")
-        noun = "заготовка" if (dish.category or "") == PREP_CATEGORY else "блюдо"
-        lines.append(f"Переключайте версии кнопками ниже — это одна {noun}.")
+        if _in_dishes(dish) and _in_preps(dish):
+            tail = "это одна карточка в обоих разделах."
+        elif _in_preps(dish):
+            tail = "это одна заготовка."
+        else:
+            tail = "это одно блюдо."
+        lines.append(f"Переключайте версии кнопками ниже — {tail}")
     return "\n".join(lines)
 
 
 def _dish_list_kind(dish: Dish) -> str:
-    return "prep" if (dish.category or "") == PREP_CATEGORY else "dish"
+    if _in_preps(dish) and not _in_dishes(dish):
+        return "prep"
+    return "dish"
 
 
 def _version_button_label(version: DishVersion) -> str:
@@ -380,15 +401,17 @@ async def _show_dish_card(
     *,
     version_id: str | None = None,
     edit: bool = False,
+    list_kind: str | None = None,
 ) -> None:
     version = _pick_version(dish, version_id)
     text = _format_dish_card(dish, version)
     versions = [(v.id, _version_button_label(v)) for v in _sorted_versions(dish)]
+    kind = list_kind if list_kind in ("dish", "prep") else _dish_list_kind(dish)
     markup = dish_card_keyboard(
         dish.id,
         versions,
         selected_version_id=version.id if version else None,
-        list_kind=_dish_list_kind(dish),
+        list_kind=kind,
     )
     await _edit_or_answer(target, text, markup=markup, edit=edit)
 
@@ -415,9 +438,9 @@ async def _fetch_page(
     if kind == "prod":
         return await catalog.list_products(page=page, q=q)
     if kind == "dish":
-        return await catalog.list_dishes(page=page, q=q, exclude_category=PREP_CATEGORY)
+        return await catalog.list_dishes(page=page, q=q, prep=False)
     if kind == "prep":
-        return await catalog.list_dishes(page=page, q=q, category=PREP_CATEGORY)
+        return await catalog.list_dishes(page=page, q=q, prep=True)
     if kind == "deliv":
         return await catalog.list_deliveries(page=page, q=q)
     if kind == "stock":
@@ -436,11 +459,24 @@ def _page_buttons(kind: str, page: PageResult) -> list[tuple[str, str]]:
         buttons = []
         for dish in page.items:
             cat = DISH_CATEGORY_RU.get(dish.category or "", dish.category)
-            label = f"{dish.name}" + (f" · {cat}" if cat else "")
+            extra = []
+            if cat:
+                extra.append(cat)
+            if dish.is_prep:
+                extra.append("заготовка")
+            label = dish.name + (f" · {' · '.join(extra)}" if extra else "")
             buttons.append((dish.id, label))
         return buttons
     if kind == "prep":
-        return [(d.id, d.name) for d in page.items]
+        buttons = []
+        for dish in page.items:
+            cat = dish.category or ""
+            if cat and cat != PREP_CATEGORY:
+                label = f"{dish.name} · {DISH_CATEGORY_RU.get(cat, cat)}"
+            else:
+                label = dish.name
+            buttons.append((dish.id, label))
+        return buttons
     if kind == "deliv":
         buttons = []
         for item in page.items:
@@ -469,7 +505,7 @@ def _empty_list_text(kind: str, query: str | None) -> str:
         "ing": "Ингредиентов пока нет. Пришлите JSON.",
         "prod": "Продуктов пока нет. Пришлите JSON.",
         "dish": "Блюд пока нет. Пришлите JSON.",
-        "prep": 'Заготовок пока нет. Пришлите JSON с category: "prep".',
+        "prep": 'Заготовок пока нет. Пришлите JSON с category: "prep" или is_prep: true.',
         "deliv": "Доставок пока нет. Пришлите JSON.",
         "stock": "Кладовая пуста. Отметьте «Есть» в составе блюда или пришлите stock.upsert.",
         "shop": "Список покупок пуст.",
@@ -498,8 +534,8 @@ async def _send_catalog_list(
         return
 
     subtitle = {
-        "dish": "Одно блюдо = одна карточка. Версии — внутри.",
-        "prep": 'Те же поля, что у блюд. JSON: dish.upsert + category "prep".',
+        "dish": "Одно блюдо = одна карточка. Его же можно показать в заготовках.",
+        "prep": "Та же карточка, что у блюда. Одно имя может быть и там, и здесь.",
         "deliv": "Где что заказывать — ссылки и заметки.",
         "stock": "Что есть дома. «Есть» в составе блюда тоже кладёт сюда.",
     }.get(kind, "Выберите позицию:")
@@ -865,7 +901,7 @@ async def on_dish(callback: CallbackQuery, catalog: CatalogService) -> None:
         await callback.answer("Не найдено", show_alert=True)
         return
     await callback.answer()
-    await _show_dish_card(callback.message, item, edit=True)
+    await _show_dish_card(callback.message, item, edit=True, list_kind="dish")
 
 
 @router.callback_query(F.data.startswith("prep:"))
@@ -876,11 +912,13 @@ async def on_prep(callback: CallbackQuery, catalog: CatalogService) -> None:
         await callback.answer("Не найдено", show_alert=True)
         return
     await callback.answer()
-    await _show_dish_card(callback.message, item, edit=True)
+    await _show_dish_card(callback.message, item, edit=True, list_kind="prep")
 
 
 @router.callback_query(F.data.startswith("ver:"))
-async def on_version(callback: CallbackQuery, catalog: CatalogService) -> None:
+async def on_version(
+    callback: CallbackQuery, catalog: CatalogService, state: FSMContext
+) -> None:
     version_id = (callback.data or "")[4:]
     version = await catalog.get_dish_version(version_id)
     if not version or not isinstance(callback.message, Message):
@@ -891,11 +929,13 @@ async def on_version(callback: CallbackQuery, catalog: CatalogService) -> None:
         await callback.answer("Блюдо не найдено", show_alert=True)
         return
     await callback.answer()
+    data = await state.get_data()
     await _show_dish_card(
         callback.message,
         dish,
         version_id=version_id,
         edit=True,
+        list_kind=data.get("list_kind"),
     )
 
 
@@ -913,7 +953,7 @@ async def on_version_delete_ask(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("verdok:"))
 async def on_version_delete_confirm(
-    callback: CallbackQuery, catalog: CatalogService
+    callback: CallbackQuery, catalog: CatalogService, state: FSMContext
 ) -> None:
     version_id = (callback.data or "")[7:]
     ok, dish_id = await catalog.delete_dish_version(version_id)
@@ -924,7 +964,10 @@ async def on_version_delete_confirm(
     if dish_id and isinstance(callback.message, Message):
         dish = await catalog.get_dish(dish_id)
         if dish:
-            await _show_dish_card(callback.message, dish, edit=True)
+            data = await state.get_data()
+            await _show_dish_card(
+                callback.message, dish, edit=True, list_kind=data.get("list_kind")
+            )
 
 
 @router.callback_query(F.data.startswith("need:"))
@@ -1130,13 +1173,15 @@ async def on_need_done(
     callback: CallbackQuery, catalog: CatalogService, state: FSMContext
 ) -> None:
     dish_id = (callback.data or "")[9:]
+    data = await state.get_data()
+    list_kind = data.get("list_kind")
     await state.clear()
     dish = await catalog.get_dish(dish_id)
     if not dish or not isinstance(callback.message, Message):
         await callback.answer("Не найдено", show_alert=True)
         return
     await callback.answer()
-    await _show_dish_card(callback.message, dish, edit=True)
+    await _show_dish_card(callback.message, dish, edit=True, list_kind=list_kind)
 
 
 @router.callback_query(F.data.startswith("needh:"))
@@ -1291,7 +1336,10 @@ async def on_dish_delete_ok(
 ) -> None:
     dish_id = (callback.data or "")[7:]
     dish = await catalog.get_dish(dish_id)
-    kind = "prep" if dish and (dish.category or "") == PREP_CATEGORY else "dish"
+    data = await state.get_data()
+    kind = data.get("list_kind")
+    if kind not in ("dish", "prep"):
+        kind = _dish_list_kind(dish) if dish else "dish"
     ok = await catalog.delete_dish(dish_id)
     await callback.answer("Удалено" if ok else "Уже нет")
     if isinstance(callback.message, Message):

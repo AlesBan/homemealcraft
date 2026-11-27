@@ -67,6 +67,10 @@ class DishUpsert(NutritionMixin):
     id: str | None = None
     name: str
     category: str | None = None
+    # True → show in Заготовки as well as Блюда (when category is a meal section).
+    is_prep: bool | None = None
+    # dish = only Блюда, prep = only Заготовки, both = the same card in both lists.
+    placement: Literal["dish", "prep", "both"] | None = None
     description: str | None = None
     cook_time_min: int | None = None
     servings: int | None = None

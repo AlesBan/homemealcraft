@@ -60,6 +60,63 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+PREP_CATEGORY = "prep"
+
+
+def resolve_dish_placement(
+    *,
+    category: str | None,
+    is_prep: bool,
+    incoming_category: str | None,
+    category_provided: bool,
+    incoming_is_prep: bool | None,
+    placement: str | None = None,
+) -> tuple[str | None, bool]:
+    """Where one recipe card is listed: dishes, preps, or both.
+
+    A meal ``category`` (anything except ``prep``) keeps the card in Блюда.
+    ``is_prep`` or ``category == prep`` puts it in Заготовки.
+    """
+    if placement == "prep":
+        return PREP_CATEGORY, True
+    if placement == "dish":
+        return _meal_category(category, incoming_category, category_provided), False
+    if placement == "both":
+        return _meal_category(category, incoming_category, category_provided), True
+
+    if category_provided and incoming_category == PREP_CATEGORY:
+        # Already on the menu: add to preps and leave the meal section in place.
+        if category and category != PREP_CATEGORY:
+            return category, True
+        return PREP_CATEGORY, True
+
+    if category_provided:
+        category = incoming_category
+
+    if incoming_is_prep is True:
+        is_prep = True
+    elif incoming_is_prep is False:
+        is_prep = False
+        if category == PREP_CATEGORY:
+            category = None
+    elif category == PREP_CATEGORY:
+        is_prep = True
+
+    return category, bool(is_prep)
+
+
+def _meal_category(
+    category: str | None,
+    incoming_category: str | None,
+    category_provided: bool,
+) -> str | None:
+    if category_provided and incoming_category and incoming_category != PREP_CATEGORY:
+        return incoming_category
+    if category and category != PREP_CATEGORY:
+        return category
+    return None
+
+
 def _new_id() -> str:
     return str(uuid4())
 
@@ -524,9 +581,13 @@ class ImportEngine:
                 select(Dish).where(Dish.name.ilike(dish_name))
             )
 
+        incoming_category = (
+            coerce_category(action.category, DISH_CATEGORY_SET)
+            if action.category is not None
+            else None
+        )
         payload = {
             "name": dish_name,
-            "category": coerce_category(action.category, DISH_CATEGORY_SET),
             "description": action.description,
             "cook_time_min": action.cook_time_min,
             "servings": action.servings,
@@ -541,13 +602,29 @@ class ImportEngine:
 
         created = False
         if entity is None:
-            entity = Dish(id=action.id or _new_id(), name=payload["name"])
+            entity = Dish(id=action.id or _new_id(), name=payload["name"], is_prep=False)
             session.add(entity)
             created = True
             for key, value in payload.items():
                 setattr(entity, key, value)
         else:
             _patch(entity, payload, action.clear_fields)
+
+        new_category, new_is_prep = resolve_dish_placement(
+            category=entity.category,
+            is_prep=bool(entity.is_prep),
+            incoming_category=incoming_category,
+            category_provided=action.category is not None,
+            incoming_is_prep=action.is_prep,
+            placement=action.placement,
+        )
+        changed_place = (
+            entity.category != new_category or bool(entity.is_prep) != new_is_prep
+        )
+        entity.category = new_category
+        entity.is_prep = new_is_prep
+        if changed_place and not created:
+            entity.updated_at = _utcnow()
 
         await session.flush()
 

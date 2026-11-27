@@ -140,6 +140,7 @@ class CatalogService:
         q: str | None = None,
         category: str | None = None,
         exclude_category: str | None = None,
+        prep: bool | None = None,
     ) -> PageResult:
         async with self._session_factory() as session:
             stmt = select(Dish)
@@ -149,6 +150,14 @@ class CatalogService:
                 count_stmt = count_stmt.where(Dish.category == category)
             if exclude_category is not None:
                 filt = (Dish.category.is_(None)) | (Dish.category != exclude_category)
+                stmt = stmt.where(filt)
+                count_stmt = count_stmt.where(filt)
+            if prep is True:
+                filt = or_(Dish.category == "prep", Dish.is_prep.is_(True))
+                stmt = stmt.where(filt)
+                count_stmt = count_stmt.where(filt)
+            elif prep is False:
+                filt = or_(Dish.category.is_(None), Dish.category != "prep")
                 stmt = stmt.where(filt)
                 count_stmt = count_stmt.where(filt)
             if q:

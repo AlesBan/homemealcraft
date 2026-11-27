@@ -173,6 +173,112 @@ async def run() -> None:
     assert (await catalog.list_products(q="Губки")).total == 0
     assert await catalog.mark_shopping_bought(custom.id, to_stock=False)
     assert (await catalog.list_stock(q="Губки")).total == 0
+    both = await engine.apply_packet(
+        ImportPacket.model_validate(
+            {
+                "schema_version": "1.0",
+                "idempotency_key": "test-flow-both-1",
+                "source": "test",
+                "actions": [
+                    {
+                        "op": "dish.upsert",
+                        "name": "Борщ",
+                        "category": "soup",
+                        "ingredients": [
+                            {"ingredient_name": "Мука", "amount": 10, "unit": "g"},
+                        ],
+                    }
+                ],
+            }
+        )
+    )
+    assert both.status == "applied"
+    dish_names = {d.name for d in (await catalog.list_dishes(prep=False)).items}
+    prep_names = {d.name for d in (await catalog.list_dishes(prep=True)).items}
+    assert "Борщ" in dish_names and "Борщ" not in prep_names
+
+    added = await engine.apply_packet(
+        ImportPacket.model_validate(
+            {
+                "schema_version": "1.0",
+                "idempotency_key": "test-flow-both-2",
+                "source": "test",
+                "actions": [{"op": "dish.upsert", "name": "Борщ", "is_prep": True}],
+            }
+        )
+    )
+    assert added.status == "applied"
+    dish_names = {d.name for d in (await catalog.list_dishes(prep=False)).items}
+    prep_names = {d.name for d in (await catalog.list_dishes(prep=True)).items}
+    assert "Борщ" in dish_names and "Борщ" in prep_names
+    borscht = next(d for d in (await catalog.list_dishes(q="Борщ")).items)
+    assert borscht.category == "soup" and borscht.is_prep is True
+
+    # category prep on a menu dish adds preps and keeps the meal section
+    via_cat = await engine.apply_packet(
+        ImportPacket.model_validate(
+            {
+                "schema_version": "1.0",
+                "idempotency_key": "test-flow-both-3",
+                "source": "test",
+                "actions": [{"op": "dish.upsert", "name": "Борщ", "category": "prep"}],
+            }
+        )
+    )
+    assert via_cat.status == "applied"
+    borscht = await catalog.get_dish(borscht.id)
+    assert borscht and borscht.category == "soup" and borscht.is_prep is True
+
+    only_prep = await engine.apply_packet(
+        ImportPacket.model_validate(
+            {
+                "schema_version": "1.0",
+                "idempotency_key": "test-flow-prep-only",
+                "source": "test",
+                "actions": [
+                    {"op": "dish.upsert", "name": "Бульон", "category": "prep"},
+                ],
+            }
+        )
+    )
+    assert only_prep.status == "applied"
+    dish_names = {d.name for d in (await catalog.list_dishes(prep=False)).items}
+    prep_names = {d.name for d in (await catalog.list_dishes(prep=True)).items}
+    assert "Бульон" not in dish_names and "Бульон" in prep_names
+
+    promoted = await engine.apply_packet(
+        ImportPacket.model_validate(
+            {
+                "schema_version": "1.0",
+                "idempotency_key": "test-flow-prep-to-both",
+                "source": "test",
+                "actions": [{"op": "dish.upsert", "name": "Бульон", "category": "soup"}],
+            }
+        )
+    )
+    assert promoted.status == "applied"
+    dish_names = {d.name for d in (await catalog.list_dishes(prep=False)).items}
+    prep_names = {d.name for d in (await catalog.list_dishes(prep=True)).items}
+    assert "Бульон" in dish_names and "Бульон" in prep_names
+
+    exclusive = await engine.apply_packet(
+        ImportPacket.model_validate(
+            {
+                "schema_version": "1.0",
+                "idempotency_key": "test-flow-placement-prep",
+                "source": "test",
+                "actions": [
+                    {"op": "dish.upsert", "name": "Борщ", "placement": "prep"},
+                ],
+            }
+        )
+    )
+    assert exclusive.status == "applied"
+    borscht = await catalog.get_dish(borscht.id)
+    assert borscht and borscht.category == "prep" and borscht.is_prep is True
+    dish_names = {d.name for d in (await catalog.list_dishes(prep=False)).items}
+    assert "Борщ" not in dish_names
+
     print("test_flow OK")
 
 

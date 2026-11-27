@@ -74,6 +74,8 @@ class Dish(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # True → also listed under Заготовки. Meal category (if any) keeps it in Блюда.
+    is_prep: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     cook_time_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
     servings: Mapped[int | None] = mapped_column(Integer, nullable=True)
